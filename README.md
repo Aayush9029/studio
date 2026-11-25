@@ -13,9 +13,11 @@
 
 ## Features
 
-- **Generate** — Create images locally from text prompts with live previews and queueing.
-- **Edit** — Paint, mask, remove backgrounds, and edit images on a floating canvas.
-- **3D** — Turn text or images into textured 3D meshes and send them straight to Blender.
+| Feature | Description |
+| --- | --- |
+| **Generate** | Create images locally from text prompts with live previews and queueing. |
+| **Edit** | Paint, mask, remove backgrounds, and edit images on a floating canvas. |
+| **3D** | Turn text or images into textured 3D meshes and send them straight to Blender. |
 
 ## Screenshots
 
