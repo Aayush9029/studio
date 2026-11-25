@@ -100,6 +100,7 @@ export interface Telemetry {
   source: "engine" | "core";
   vramTotalMb: number; vramUsedMb: number; vramFreeMb: number;
   ramTotalMb: number; ramUsedMb: number;
+  cpuUtilPct?: number | null;
 }
 export interface EngineTelemetry extends Telemetry {
   source: "engine";

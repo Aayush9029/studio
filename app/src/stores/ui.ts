@@ -25,6 +25,7 @@ interface UiState {
   material: "mica" | "none";
   modelsDrawerOpen: boolean;
   expandFamily: FamilyId | null;
+  ignoreGenerateDrop: boolean;
   whisper: Whisper | null;
   hydrated: boolean;
   /** Measured capsule heights, for stage insets and whisper placement. */
@@ -39,6 +40,7 @@ interface UiState {
   openModels(family?: FamilyId): void;
   closeModels(): void;
   toggleModels(): void;
+  setIgnoreGenerateDrop(v: boolean): void;
   say(text: string, opts?: { tone?: "info" | "error"; action?: WhisperAction }): void;
   clearWhisper(id?: number): void;
 }
@@ -56,6 +58,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   material: "none",
   modelsDrawerOpen: false,
   expandFamily: null,
+  ignoreGenerateDrop: false,
   whisper: null,
   hydrated: false,
   capsuleH: { generate: 104, edit: 140, three: 140, library: 0 },
@@ -73,6 +76,7 @@ export const useUiStore = create<UiState>()((set, get) => ({
   openModels: (family) => set({ modelsDrawerOpen: true, expandFamily: family ?? null }),
   closeModels: () => set({ modelsDrawerOpen: false, expandFamily: null }),
   toggleModels: () => set((s) => ({ modelsDrawerOpen: !s.modelsDrawerOpen, expandFamily: null })),
+  setIgnoreGenerateDrop: (v) => set({ ignoreGenerateDrop: v }),
   say: (text, opts) => set({ whisper: { id: ++whisperSeq, text, tone: opts?.tone ?? "info", action: opts?.action } }),
   clearWhisper: (id) => set((s) => (id === undefined || s.whisper?.id === id ? { whisper: null } : s)),
 }));

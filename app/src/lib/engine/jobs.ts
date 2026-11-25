@@ -1,4 +1,4 @@
-/* Routes job events to the workspace that owns the job (§11.3). */
+/* Routes job events, supports job queuing, and drains queued requests sequentially (§11.3). */
 
 import type {
   JobCancelledEvent,
@@ -11,8 +11,10 @@ import type {
   WorkspaceId,
 } from "../../shared/contract";
 import { getMurmuration } from "../../murmuration";
+import { enginePhase, useEngineStore } from "../../stores/engine";
 import { ownerForKind, useJobStore } from "../../stores/job";
 import { useLibraryStore } from "../../stores/library";
+import { useQueueStore, type QueuedJob } from "../../stores/queue";
 import { useUiStore } from "../../stores/ui";
 import { whisperError } from "../errors";
 import { loadLibrary } from "../libraryScan";
@@ -75,28 +77,26 @@ export function handleJobEvent(ev: JobEvent): void {
       recordOutputs(ev.outputs);
       js.end(ev.jobId);
       host?.completed?.(ev);
+      window.setTimeout(drainQueue, 0);
       break;
     case "job.error":
       recordOutputs(ev.outputs);
       js.end(ev.jobId);
       host?.error?.(ev);
       whisperError(ev.error, active.model);
+      window.setTimeout(drainQueue, 0);
       break;
     case "job.cancelled":
       recordOutputs(ev.outputs);
       js.end(ev.jobId);
       host?.cancelled?.(ev);
+      window.setTimeout(drainQueue, 0);
       break;
   }
 }
 
 /**
- * Reconnect reconciliation (§4): called with the engine's authoritative `telemetry.activeJobId`
- * once the post-reconnect snapshot (models.status + telemetry, plus any `job.started` replay that
- * preceded it) has arrived. If the renderer still believes a job is running that the engine no
- * longer reports, its terminal event was lost while disconnected: settle the owning workspace
- * exactly like a cancellation, stop its Murmuration, and rescan the Library in case the job
- * actually finished and wrote outputs. Returns true when stale state was cleared.
+ * Reconnect reconciliation (§4): called with the engine's authoritative `telemetry.activeJobId`.
  */
 export function reconcileActiveJob(engineActiveJobId: string | null | undefined): boolean {
   const js = useJobStore.getState();
@@ -120,6 +120,7 @@ export function reconcileActiveJob(engineActiveJobId: string | null | undefined)
   }
   void getMurmuration(owner)?.cancel();
   loadLibrary();
+  window.setTimeout(drainQueue, 0);
   return true;
 }
 
@@ -143,6 +144,53 @@ export async function submitJob(owner: WorkspaceId, send: () => Promise<{ jobId:
     if (useJobStore.getState().submitting === owner) useJobStore.getState().setSubmitting(null);
   }
 }
+
+/** Submits immediately when idle, or enqueues cleanly to run in order once current work finishes. */
+export async function enqueueOrSubmit(entry: Omit<QueuedJob, "id" | "createdAt">): Promise<void> {
+  const js = useJobStore.getState();
+  const q = useQueueStore.getState();
+  const ready = enginePhase(useEngineStore.getState()) === "ready";
+  if (ready && !js.active && !js.submitting && q.items.length === 0) {
+    try {
+      await submitJob(entry.owner, entry.execute);
+    } finally {
+      entry.cleanup?.();
+    }
+    return;
+  }
+  const pos = q.enqueue(entry);
+  useUiStore.getState().say(`Queued #${pos}`, {
+    action: { label: "View queue", run: () => useQueueStore.getState().setDrawerOpen(true) },
+  });
+}
+
+let draining = false;
+
+/** Starts the next queued job when the engine is ready and idle. */
+export function drainQueue(): void {
+  if (draining) return;
+  const js = useJobStore.getState();
+  if (js.active || js.submitting) return;
+  if (enginePhase(useEngineStore.getState()) !== "ready") return;
+  const next = useQueueStore.getState().shift();
+  if (!next) return;
+  draining = true;
+  void submitJob(next.owner, next.execute)
+    .then((jobId) => {
+      if (!jobId) window.setTimeout(drainQueue, 150);
+    })
+    .finally(() => {
+      draining = false;
+      next.cleanup?.();
+    });
+}
+
+// Drain automatically when the engine reaches ready (e.g. queued during warmup/startup).
+useEngineStore.subscribe((s, p) => {
+  if (enginePhase(s) === "ready" && enginePhase(p) !== "ready" && useQueueStore.getState().items.length > 0) {
+    window.setTimeout(drainQueue, 0);
+  }
+});
 
 export async function cancelActiveJob(): Promise<void> {
   const a = useJobStore.getState().active;

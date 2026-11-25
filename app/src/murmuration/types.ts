@@ -5,6 +5,8 @@ export type MurmurationPhase = "idle" | "warming" | "preview" | "reveal";
 export interface MurmurationBeginOptions {
   aspect: number;
   seed: number;
+  /** Render preview frames sharp with zero frost/distortion (e.g. 3D building blocks). */
+  crisp?: boolean;
   /** Inpaint clip (white = covered). Ownership passes to the module, which closes it. */
   clipMask?: ImageBitmap;
 }
@@ -35,6 +37,8 @@ export interface MurmurationBackend extends Murmuration {
   refreshTheme(): void;
   /** Sub-progress for Phase-A-only jobs (keeps the flock calm, no dispersal until the end). */
   setProgress(p: number): void;
+  /** Toggle razor-sharp unblurred preview rendering. */
+  setCrisp?(on: boolean): void;
 }
 
 export interface MurmurPalette {

@@ -272,28 +272,25 @@ export async function enhanceInPlace(field: PromptFieldHandle | null, text: stri
 
 export interface PrimaryGate {
   running: boolean;
+  busyAny: boolean;
   progress: number;
   disabled: boolean;
   reason?: string;
   pending: boolean;
 }
 
-/** Shared enable/disable rules for each workspace's primary action (§8.1). */
+/** Shared enable/disable rules for each workspace's primary action (§8.1). Submissions queue cleanly when busy. */
 export function usePrimaryGate(ws: WorkspaceId, hasInput: boolean, inputReason: string): PrimaryGate {
   const phase = useEngineStore((s) => enginePhase(s));
-  // Primitive, per-workspace selectors: a hidden capsule doesn't re-render on another workspace's
-  // step progress — only when its own job's progress or the coarse busy/submitting flags change.
   const running = useJobStore((s) => s.active?.owner === ws);
   const progress = useJobStore((s) => (s.active?.owner === ws ? s.active.progress : 0));
-  const busyElsewhere = useJobStore((s) => !!s.active && s.active.owner !== ws);
-  const submitBlocked = useJobStore((s) => !!s.submitting && s.submitting !== ws);
+  const busyAny = useJobStore((s) => !!s.active || !!s.submitting);
   const pending = useJobStore((s) => s.submitting === ws);
   let reason: string | undefined;
   if (phase === "starting") reason = "Engine is starting";
   else if (phase === "stopped") reason = "Engine stopped";
-  else if (busyElsewhere) reason = "Busy — one thing at a time";
   else if (!hasInput) reason = inputReason;
-  return { running, progress, disabled: !!reason || submitBlocked, reason, pending };
+  return { running, busyAny, progress, disabled: !!reason, reason, pending };
 }
 
 export function MicroLabel({ children }: { children: ReactNode }) {

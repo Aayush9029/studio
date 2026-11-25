@@ -17,12 +17,15 @@ import {
   Undo2,
   X,
 } from "lucide-react";
+import { hasStudioDrag, useDragStore } from "../../stores/drag";
 import { useEditStore, type EditTool } from "../../stores/edit";
 import { engineHttp, toStudioError } from "../../lib/engine/http";
 import { whisperError } from "../../lib/errors";
 import { fetchBlob, imageFileFromEvent, pickImages } from "../../lib/images";
+import { toUrl } from "../../lib/studio";
 import { IconButton } from "../../components/ui/IconButton";
 import { Menu } from "../../components/ui/Menu";
+import { Tooltip } from "../../components/ui/Tooltip";
 import { RailDivider } from "../../components/ui/misc";
 import type { EditorDocument } from "./EditorDocument";
 
@@ -53,8 +56,7 @@ export function ToolRail({
   const setMaskVisible = useEditStore((s) => s.setMaskVisible);
   return (
     <div
-      className={`glass absolute flex w-11 flex-col items-center gap-1 rounded-full py-1.5 transition-opacity ${disabled ? "pointer-events-none opacity-40" : ""}`}
-      style={{ left: 16, top: "50%", transform: "translateY(-50%)", zIndex: 20 }}
+      className={`glass pointer-events-auto flex w-11 flex-col items-center gap-1 rounded-full py-1.5 transition-opacity ${disabled ? "pointer-events-none opacity-40" : ""}`}
       role="toolbar"
       aria-orientation="vertical"
       aria-label="Tools"
@@ -91,7 +93,7 @@ export function ToolRail({
   );
 }
 
-/* ───────── View cluster (§5.2.4) ───────── */
+/* ───────── Vertical view cluster on bottom-left (keeps top BrushBar clear) ───────── */
 
 export function ViewCluster({ doc, disabled }: { doc: EditorDocument; disabled: boolean }) {
   const canUndo = useEditStore((s) => s.doc.canUndo);
@@ -104,31 +106,34 @@ export function ViewCluster({ doc, disabled }: { doc: EditorDocument; disabled: 
   const [menu, setMenu] = useState(false);
   return (
     <div
-      className={`glass absolute flex h-10 items-center gap-0.5 rounded-full px-1 ${disabled ? "pointer-events-none opacity-40" : ""}`}
-      style={{ right: 16, top: 16, zIndex: 20 }}
+      className={`glass pointer-events-auto flex w-11 flex-col items-center gap-0.5 rounded-full py-1.5 ${disabled ? "pointer-events-none opacity-40" : ""}`}
       role="toolbar"
+      aria-orientation="vertical"
       aria-label="View"
     >
-      <IconButton icon={Undo2} label="Undo" shortcut="Ctrl+Z" tooltipSide="bottom" disabled={!canUndo} onClick={() => doc.undo()} />
-      <IconButton icon={Redo2} label="Redo" shortcut="Ctrl+Y" tooltipSide="bottom" disabled={!canRedo} onClick={() => doc.redo()} />
-      <RailDivider vertical />
-      <button
-        ref={zoomRef}
-        type="button"
-        aria-label="Zoom"
-        aria-expanded={menu}
-        onClick={() => setMenu((v) => !v)}
-        className="mono-sm h-8 min-w-[52px] rounded-full px-2 text-ink-2 hover:bg-hover hover:text-ink"
-      >
-        {Math.round(zoom * 100)}%
-      </button>
-      <IconButton icon={Scan} label="Fit" shortcut="Ctrl+0" tooltipSide="bottom" onClick={() => doc.fit()} />
-      <RailDivider vertical />
+      <IconButton icon={Undo2} label="Undo" shortcut="Ctrl+Z" size={34} tooltipSide="right" disabled={!canUndo} onClick={() => doc.undo()} />
+      <IconButton icon={Redo2} label="Redo" shortcut="Ctrl+Y" size={34} tooltipSide="right" disabled={!canRedo} onClick={() => doc.redo()} />
+      <RailDivider />
+      <Tooltip label="Zoom presets" side="right">
+        <button
+          ref={zoomRef}
+          type="button"
+          aria-label="Zoom"
+          aria-expanded={menu}
+          onClick={() => setMenu((v) => !v)}
+          className="mono-sm h-7 w-9 rounded-full text-center text-[10px] text-ink-2 hover:bg-hover hover:text-ink"
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+      </Tooltip>
+      <IconButton icon={Scan} label="Fit" shortcut="Ctrl+0" size={34} tooltipSide="right" onClick={() => doc.fit()} />
+      <RailDivider />
       <IconButton
         icon={Columns2}
         label="Before / After"
         shortcut="\"
-        tooltipSide="bottom"
+        size={34}
+        tooltipSide="right"
         disabled={!hasBefore}
         active={compare}
         pressed={compare}
@@ -138,7 +143,7 @@ export function ViewCluster({ doc, disabled }: { doc: EditorDocument; disabled: 
         open={menu}
         onClose={() => setMenu(false)}
         anchor={zoomRef}
-        placement="bottom"
+        placement="right"
         align="end"
         width={180}
         ariaLabel="Zoom"
@@ -186,10 +191,20 @@ export function ReferenceStrip({ doc, contentVersion, visible }: { doc: EditorDo
 
   const onDrop = (slot: number) => (e: DragEvent) => {
     const f = imageFileFromEvent(e.dataTransfer);
-    if (!f) return;
-    e.preventDefault();
-    e.stopPropagation();
-    void fill(slot, { blob: f, url: "", name: f.name });
+    if (f) {
+      e.preventDefault();
+      e.stopPropagation();
+      useDragStore.getState().end();
+      void fill(slot, { blob: f, url: "", name: f.name });
+      return;
+    }
+    const drag = useDragStore.getState().item;
+    if (drag) {
+      e.preventDefault();
+      e.stopPropagation();
+      useDragStore.getState().end();
+      void fill(slot, { blob: null, url: toUrl(drag.path), name: drag.name });
+    }
   };
 
   return (
@@ -207,7 +222,13 @@ export function ReferenceStrip({ doc, contentVersion, visible }: { doc: EditorDo
         <div
           key={i}
           className="group relative h-16 w-16 overflow-hidden rounded-[var(--r-md)]"
-          onDragOver={(e) => e.preventDefault()}
+          onDragOver={(e) => {
+            if (hasStudioDrag(e.dataTransfer)) {
+              e.preventDefault();
+              useDragStore.getState().setHoverTarget(`Reference ${i + 2}`);
+            }
+          }}
+          onDragLeave={() => useDragStore.getState().setHoverTarget(null)}
           onDrop={onDrop(i)}
           onPaste={(e) => {
             const f = imageFileFromEvent(e.clipboardData);

@@ -25,6 +25,8 @@ export function resolveTheme(pref: ThemeName | "system", system: ThemeName): The
 
 export function hydrateFromSettings(s: AppSettings, systemTheme: ThemeName, material: "mica" | "none"): void {
   const ws = WORKSPACES.includes(s.lastWorkspace) ? s.lastWorkspace : "generate";
+  const state = asRecord(s.workspaceState);
+  const uiState = asRecord(state.ui);
   useUiStore.setState((u) => ({
     themePref: s.theme,
     systemTheme,
@@ -32,10 +34,10 @@ export function hydrateFromSettings(s: AppSettings, systemTheme: ThemeName, mate
     material,
     sidebarCollapsed: !!s.sidebarCollapsed,
     workspace: ws,
+    ignoreGenerateDrop: !!uiState.ignoreGenerateDrop,
     visited: { ...u.visited, [ws]: true },
     hydrated: true,
   }));
-  const state = asRecord(s.workspaceState);
   useGenerateStore.getState().hydrate(asRecord(state.generate) as Partial<GeneratePersisted>);
   useEditStore.getState().hydrate(asRecord(state.edit) as Partial<EditPersisted>);
   useThreeStore.getState().hydrate(asRecord(state.three) as Partial<ThreePersisted>);
@@ -51,6 +53,7 @@ function snapshot(): Partial<AppSettings> {
     sidebarCollapsed: ui.sidebarCollapsed,
     lastWorkspace: ui.workspace,
     workspaceState: {
+      ui: { ignoreGenerateDrop: ui.ignoreGenerateDrop },
       generate: pick(useGenerateStore.getState(), PERSISTED_GENERATE_KEYS),
       edit: pick(useEditStore.getState(), PERSISTED_EDIT_KEYS),
       three: pick(useThreeStore.getState(), PERSISTED_THREE_KEYS),
@@ -77,7 +80,7 @@ export function startPersistence(): () => void {
   lastJson = JSON.stringify(snapshot());
   const unsubs = [
     useUiStore.subscribe((s, p) => {
-      if (s.themePref !== p.themePref || s.sidebarCollapsed !== p.sidebarCollapsed || s.workspace !== p.workspace) schedule();
+      if (s.themePref !== p.themePref || s.sidebarCollapsed !== p.sidebarCollapsed || s.workspace !== p.workspace || s.ignoreGenerateDrop !== p.ignoreGenerateDrop) schedule();
     }),
     useGenerateStore.subscribe((s, p) => {
       if (PERSISTED_GENERATE_KEYS.some((k) => s[k] !== p[k])) schedule();

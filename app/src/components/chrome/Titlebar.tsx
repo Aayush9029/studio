@@ -6,6 +6,7 @@ import { useEditStore } from "../../stores/edit";
 import { useGenerateStore } from "../../stores/generate";
 import { useJobStore, type ActiveJob } from "../../stores/job";
 import { filterItems, useLibraryStore } from "../../stores/library";
+import { useQueueStore } from "../../stores/queue";
 import { useThreeStore } from "../../stores/three";
 import { useUiStore } from "../../stores/ui";
 import { formatCount } from "../../lib/format";
@@ -72,6 +73,8 @@ export function Titlebar() {
   const genModel = useGenerateStore((s) => s.model);
   const editMode = useEditStore((s) => s.mode);
   const engine3d = useThreeStore((s) => s.engine);
+  const queueCount = useQueueStore((s) => s.items.length);
+  const toggleQueue = useQueueStore((s) => s.toggleDrawer);
 
   let title: string;
   let detail: string;
@@ -115,6 +118,19 @@ export function Titlebar() {
         {counter && <span className="mono-sm ml-1.5 text-ink-2">{counter}</span>}
         {phase && <span className="ml-1.5">{phase}</span>}
       </div>
+      {queueCount > 0 && (
+        <button
+          type="button"
+          onClick={toggleQueue}
+          aria-label={`Queue (${queueCount})`}
+          className="no-drag t-caption absolute flex h-6 items-center gap-1.5 rounded-full bg-accent-soft px-2.5 text-accent hover:opacity-90"
+          style={{ right: "calc(var(--caption-reserve) + 12px)" }}
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden />
+          <span>Queue</span>
+          <span className="mono-sm">{queueCount}</span>
+        </button>
+      )}
     </div>
   );
 }

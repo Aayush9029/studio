@@ -26,10 +26,11 @@ import time
 import numpy as np
 from PIL import Image
 
+from ..events import Hub
 from ..families import FAMILIES, files_of
 from ..outputs import make_inputs, make_params, make_sidecar
-from ..util import (MIB, atomic_write_bytes, atomic_write_json, fit_square, hex16, iso_utc, png_bytes, stem_for,
-                    webp_bytes)
+from ..util import (MIB, atomic_write_bytes, atomic_write_json, fit_square, hex16, iso_utc, jpeg_bytes, png_bytes,
+                    stem_for, webp_bytes)
 from .common import pil_to_tensor, run_node, sample, step_callback, tensor_to_pil
 from .render import render_mesh, voxel_mesh
 from .t2i import sample_and_decode, zimage_encode
@@ -137,6 +138,60 @@ def _structure_thumb(voxel, z_up: bool) -> Image.Image:
     vv, vf = voxel_mesh(occ, z_up=z_up)
     del occ
     return render_mesh(vv, vf, size=512)
+
+
+def _rgba_on_slate(img: Image.Image, bg: tuple[int, int, int] = (26, 28, 36)) -> Image.Image:
+    """Composite transparent 3D previews onto dark studio slate for crisp JPEG streaming."""
+    im = img.convert("RGBA")
+    canvas = Image.new("RGB", im.size, bg)
+    canvas.paste(im, (0, 0), im)
+    return canvas
+
+
+def _structure_step_callback(job, stage_index: int, total_steps: int, progress_of, shape_vae, z_up: bool):
+    """Per-step callback for Stage 3 Structure that decodes and streams voxel building blocks."""
+    def cb(step, x0, x, total):
+        check_interrupt(job)
+        s = step + 1
+        frac = s / total_steps
+        ev = job.build_progress(
+            stage_index, "sampling", step=s, total_steps=total_steps,
+            batch_index=0, stage_progress=frac, progress=progress_of(frac),
+        )
+        frame = None
+        if x0 is not None and job.engine.hub.client_count > 0 and not job.terminal:
+            import torch
+            import comfy.model_management as mm
+            xs = sample_chunk = decoded = voxel_data = occ = vv = vf = rendered = comp = None
+            try:
+                xs = x0.tensors[0] if getattr(x0, "is_nested", False) else x0
+                sample_chunk = xs[:1, :8]
+                shape_vae.prepare_decode(sample_chunk.shape)
+                first_stage = shape_vae.first_stage_model
+                with torch.inference_mode():
+                    dev = mm.get_torch_device()
+                    decoded = first_stage.decode_structure(sample_chunk.to(device=dev, dtype=shape_vae.vae_dtype)) > 0
+                    current_res = int(decoded.shape[2])
+                    if current_res != 32 and current_res > 32:
+                        ratio = current_res // 32
+                        decoded = torch.nn.functional.max_pool3d(decoded.float(), ratio, ratio, 0) > 0.5
+                    voxel_data = decoded.squeeze(1).float()
+                    occ = voxel_data[0].cpu().numpy() > 0.5
+                if occ.any():
+                    vv, vf = voxel_mesh(occ, z_up=z_up)
+                    if len(vv) > 0 and len(vf) > 0:
+                        rendered = render_mesh(vv, vf, size=384, supersample=1)
+                        comp = _rgba_on_slate(rendered)
+                        frame = Hub.preview_frame(s, total_steps, stage_index, jpeg_bytes(comp, 82))
+            except Exception as exc:
+                log.debug("structure step %d preview skipped: %s", s, exc)
+                frame = None
+            finally:
+                del xs, sample_chunk, decoded, voxel_data, occ, vv, vf, rendered, comp
+        job.engine.emit_job_preview(
+            job, job.preview_token, ev, frame, priority=(s == 1 or s == total_steps),
+        )
+    return cb
 
 
 def _cutout_rgba(src: Image.Image, mask_l: Image.Image) -> Image.Image:
@@ -305,8 +360,11 @@ def run_3d(job, req: dict) -> None:
     m_struct = ModelSamplingSD3().patch(m, 5.0)[0]
     latent = run_node(t2.EmptyTrellis2LatentStructure, batch_size=1)[0]
     s1 = sample(m_struct, seed, STRUCTURE_STEPS, 7.5, "euler", "normal", pos, neg, latent,
-                callback=step_callback(job, S_STRUCTURE, STRUCTURE_STEPS, 0,
-                                       lambda f: st.p(S_STRUCTURE, 0.1 + 0.8 * f)))
+                callback=_structure_step_callback(
+                    job, S_STRUCTURE, STRUCTURE_STEPS,
+                    lambda f: st.p(S_STRUCTURE, 0.1 + 0.8 * f),
+                    shape_vae, fam == "trellis2",
+                ))
     st.progress(S_STRUCTURE, "decoding", 0.92)
     voxel = run_node(t2.VaeDecodeStructureTrellis2, samples=s1, vae=shape_vae, resolution="32")[0]
     del s1, m_struct, latent
@@ -322,6 +380,28 @@ def run_3d(job, req: dict) -> None:
                 callback=step_callback(job, S_SHAPE, SHAPE_STEPS[0], 0, lambda f: st.p(S_SHAPE, 0.85 * f),
                                        step_offset=0, stage_total=total_shape))
     st.progress(S_SHAPE, "processing", SHAPE_STEPS[0] / total_shape * 0.85)
+    if eng.hub.client_count > 0 and not job.terminal:
+        mesh_coarse = _subs_c = item_c = v0_c = f0_c = rendered_c = comp_c = None
+        try:
+            mesh_coarse, _subs_c = run_node(t2.VaeDecodeShapeTrellis, samples=s2, vae=shape_vae)
+            item_c = _mesh_item(mesh_coarse)
+            v0_c, f0_c = item_c[0], item_c[1]
+            rendered_c = render_mesh(v0_c, f0_c, size=384, supersample=1)
+            comp_c = _rgba_on_slate(rendered_c)
+            ev_c = job.build_progress(
+                S_SHAPE, "processing", step=SHAPE_STEPS[0], total_steps=total_shape,
+                batch_index=0, stage_progress=SHAPE_STEPS[0] / total_shape * 0.85,
+                progress=st.p(S_SHAPE, SHAPE_STEPS[0] / total_shape * 0.85),
+            )
+            eng.emit_job_preview(
+                job, job.preview_token, ev_c,
+                Hub.preview_frame(SHAPE_STEPS[0], total_shape, S_SHAPE, jpeg_bytes(comp_c, 82)),
+                priority=True,
+            )
+        except Exception as exc:
+            log.debug("coarse shape preview skipped: %s", exc)
+        finally:
+            del mesh_coarse, _subs_c, item_c, v0_c, f0_c, rendered_c, comp_c
     pos3, neg3, lat3 = run_node(t2.Trellis2UpsampleStage, positive=pos2, negative=neg2, shape_latent=s2,
                                 vae=shape_vae, target_resolution=UPSAMPLE_RESOLUTION)
     s3 = sample(m_shape, seed, SHAPE_STEPS[1], 7.5, "euler", "simple", pos3, neg3, lat3,

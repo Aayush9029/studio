@@ -66,7 +66,7 @@ export function buildCsp(dev: boolean): string {
   return [
     `default-src 'self' studio:${devHosts}`,
     `img-src 'self' studio: blob: data:${devHosts}`,
-    `connect-src 'self' studio: ${engine}${devHosts}`,
+    `connect-src 'self' studio: blob: ${engine}${devHosts}`,
     `style-src 'self' 'unsafe-inline'${devHosts}`,
     `font-src 'self' studio: data:${devHosts}`,
     `worker-src 'self' blob:${devHosts}`,

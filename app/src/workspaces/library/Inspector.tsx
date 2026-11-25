@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
-import { Box, Brush, Copy, FolderOpen, Heart, RotateCcw, Send, Trash2, X } from "lucide-react";
+import { Box, Brush, Copy, FolderOpen, Heart, RotateCcw, Trash2, X } from "lucide-react";
 import type { OutputItem } from "../../shared/contract";
+import { useDragStore } from "../../stores/drag";
 import { STAGE_ORDER } from "../../stores/three";
 import { useEngineStore } from "../../stores/engine";
 import { useLibraryStore } from "../../stores/library";
@@ -9,6 +10,7 @@ import { formatCount, formatCreated, formatDims, formatDuration, formatMeters } 
 import { imagePathOf, resolveAssetFile, thumbUrl } from "../../lib/images";
 import { pushLayer } from "../../lib/layers";
 import { toUrl } from "../../lib/studio";
+import { BlenderIcon } from "../../components/ui/EmptyStateIcons";
 import { IconButton } from "../../components/ui/IconButton";
 import { Checker } from "../../components/ui/misc";
 
@@ -69,40 +71,70 @@ export function Inspector({ item, onClose, onStep }: { item: OutputItem; onClose
         }
       }}
     >
-      <div className="flex justify-end px-4 pt-4">
+      <div className="flex items-center justify-end gap-1 px-4 pt-4">
+        <IconButton
+          icon={Heart}
+          label={item.favorite ? "Remove from favorites" : "Favorite"}
+          shortcut="F"
+          pressed={item.favorite}
+          tone={item.favorite ? "accent" : "default"}
+          iconClassName={item.favorite ? "fill-current" : ""}
+          onClick={() => void toggleFavorite(item)}
+        />
+        <IconButton icon={Trash2} label="Delete" shortcut="Del" variant="danger" onClick={() => void deleteItems([item])} />
         <IconButton icon={X} label="Close" shortcut="Esc" onClick={onClose} tooltipSide="left" />
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 pb-6">
-        <button type="button" aria-label="Open in its workspace" onClick={() => openHome(item)} className="block overflow-hidden rounded-[var(--r-md)]">
+        <button
+          type="button"
+          draggable
+          aria-label="Open in its workspace"
+          onClick={() => openHome(item)}
+          onDragStart={(e) =>
+            useDragStore.getState().start(
+              {
+                kind: item.kind,
+                path: imagePathOf(item) ?? item.path,
+                previewUrl: preview || fallback,
+                name: item.file,
+                item,
+              },
+              e.clientX,
+              e.clientY,
+              e.dataTransfer,
+            )
+          }
+          className="block overflow-hidden rounded-[var(--r-md)]"
+        >
           {item.hasAlpha ? (
             <Checker className="rounded-[var(--r-md)]">
-              <img src={preview || fallback} alt={p.prompt.slice(0, 200)} decoding="async" className="block w-full" />
+              <img src={preview || fallback} alt={p.prompt.slice(0, 200)} decoding="async" draggable={false} className="block w-full" />
             </Checker>
           ) : (
-            <img src={preview || fallback} alt={p.prompt.slice(0, 200)} decoding="async" className="block w-full bg-sunken" />
+            <img src={preview || fallback} alt={p.prompt.slice(0, 200)} decoding="async" draggable={false} className="block w-full bg-sunken" />
           )}
         </button>
 
-        <div className="flex items-center gap-0.5">
-          <IconButton icon={RotateCcw} label="Reuse prompt and seed" onClick={() => reusePromptAndSeed(item)} />
-          <IconButton icon={Brush} label="Send to Edit" disabled={!imagePathOf(item)} onClick={() => openInEdit(item)} />
-          <IconButton icon={Box} label="Send to 3D" disabled={!imagePathOf(item)} onClick={() => makeIn3D(item)} />
-          {item.kind === "3d" && (
-            <IconButton icon={Send} label="Send to Blender" disabled={!blenderConnected} disabledLabel="Blender not running" onClick={() => void sendToBlender(item)} />
+        <div className="flex flex-col gap-1.5">
+          <InspectorAction icon={<RotateCcw size={15} strokeWidth={1.75} absoluteStrokeWidth />} label="Reuse prompt and seed" onClick={() => reusePromptAndSeed(item)} />
+          {imagePathOf(item) && (
+            <>
+              <InspectorAction icon={<Brush size={15} strokeWidth={1.75} absoluteStrokeWidth />} label="Edit in canvas" onClick={() => openInEdit(item)} />
+              <InspectorAction icon={<Box size={15} strokeWidth={1.75} absoluteStrokeWidth />} label="Make 3D" onClick={() => makeIn3D(item)} />
+            </>
           )}
-          <IconButton icon={FolderOpen} label="Reveal in Explorer" onClick={() => void reveal(item)} />
-          <IconButton icon={Copy} label="Copy image" onClick={() => void copyImage(item)} />
-          <span className="flex-1" />
-          <IconButton
-            icon={Heart}
-            label={item.favorite ? "Remove from favorites" : "Favorite"}
-            shortcut="F"
-            pressed={item.favorite}
-            tone={item.favorite ? "accent" : "default"}
-            iconClassName={item.favorite ? "fill-current" : ""}
-            onClick={() => void toggleFavorite(item)}
-          />
-          <IconButton icon={Trash2} label="Delete" shortcut="Del" variant="danger" onClick={() => void deleteItems([item])} />
+          {item.kind === "3d" && (
+            <InspectorAction
+              icon={<BlenderIcon size={15} colored={blenderConnected} />}
+              label={blenderConnected ? "Send to Blender" : "Send to Blender (not running)"}
+              disabled={!blenderConnected}
+              onClick={() => void sendToBlender(item)}
+            />
+          )}
+          {imagePathOf(item) && (
+            <InspectorAction icon={<Copy size={15} strokeWidth={1.75} absoluteStrokeWidth />} label="Copy image" onClick={() => void copyImage(item)} />
+          )}
+          <InspectorAction icon={<FolderOpen size={15} strokeWidth={1.75} absoluteStrokeWidth />} label="Reveal in Explorer" onClick={() => void reveal(item)} />
         </div>
 
         {p.prompt && (
@@ -153,6 +185,30 @@ export function Inspector({ item, onClose, onStep }: { item: OutputItem; onClose
         )}
       </div>
     </aside>
+  );
+}
+
+function InspectorAction({
+  icon,
+  label,
+  disabled,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  disabled?: boolean;
+  onClick(): void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="t-ui flex h-9 w-full items-center gap-2.5 rounded-[var(--r-sm)] bg-sunken px-3 text-left text-ink transition-colors duration-[var(--dur-instant)] hover:bg-hover disabled:opacity-40"
+    >
+      <span className="flex w-4 shrink-0 items-center justify-center text-ink-2">{icon}</span>
+      <span className="truncate">{label}</span>
+    </button>
   );
 }
 

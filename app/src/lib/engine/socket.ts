@@ -167,6 +167,7 @@ class EngineSocket {
           return;
         }
         const m = getMurmuration(owner);
+        useJobStore.getState().setLivePreview(owner, frame.jpeg, frame.stageIndex);
         if (!m) {
           bmp.close();
           return;

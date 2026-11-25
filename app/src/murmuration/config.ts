@@ -31,9 +31,9 @@ export const POINT_SIZE_PX = 2.6;
 /** Extra point-sprite room so the velocity-aligned dash is not clipped by the sprite square. */
 export const POINT_SPRITE_SCALE = 2.2;
 
-export const DISTORT_AMOUNT = 0.028;
-export const DISTORT_POW = 1.6;
-export const FROST_MAX_LOD = 3.0;
+export const DISTORT_AMOUNT = 0.008;
+export const DISTORT_POW = 2.0;
+export const FROST_MAX_LOD = 0.9;
 
 export const FADE_IN_MS = 300;
 export const CANCEL_FADE_MS = 200;
@@ -59,7 +59,7 @@ export const CANVAS2D = {
   particles: 600,
   frameMinMs: 32,
   dprCap: 1.0,
-  blurMaxPx: 14,
+  blurMaxPx: 4,
   dashW: 1.5,
   dashH: 4,
 } as const;

@@ -2,6 +2,7 @@ import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { EDIT_RESOLUTIONS } from "../../shared/families";
 import { editDefaultSteps, useEditStore, type EditUiMode } from "../../stores/edit";
+import { useQueueStore } from "../../stores/queue";
 import { cancelActiveJob } from "../../lib/engine/jobs";
 import {
   CapsuleRow,
@@ -16,7 +17,7 @@ import {
   type PromptFieldHandle,
 } from "../../components/capsule/PromptCapsule";
 import { SegmentRow, SettingsButton } from "../../components/capsule/pills";
-import { PrimaryButton } from "../../components/ui/PrimaryButton";
+import { ListPlus, PrimaryButton, StopButton } from "../../components/ui/PrimaryButton";
 import { Segmented } from "../../components/ui/Segmented";
 import { Slider } from "../../components/ui/Slider";
 import { useInklingAvailable } from "../../stores/engine";
@@ -64,6 +65,7 @@ export const EditCapsule = forwardRef<EditCapsuleHandle, { disabled: boolean; on
     e.hasDoc && e.instruction.trim().length > 0 && !needMask,
     !e.hasDoc ? "Drop an image first" : needMask ? "Paint a mask first · M" : "Describe the change",
   );
+  const queueLen = useQueueStore((s) => s.items.length);
 
   const defSteps = editDefaultSteps(e.mode);
   const steps = e.steps ?? defSteps;
@@ -139,13 +141,15 @@ export const EditCapsule = forwardRef<EditCapsuleHandle, { disabled: boolean; on
         />
         <Spacer />
         <EnhanceButton on={e.enhance} busy={enhancing} onToggle={() => e.patch({ enhance: !e.enhance })} onEnhanceNow={() => void enhanceNow()} />
+        {gate.running && <StopButton progress={gate.progress} onStop={() => void cancelActiveJob()} />}
         <PrimaryButton
-          running={gate.running}
-          progress={gate.progress}
+          running={false}
+          progress={0}
           disabled={gate.disabled}
           pending={gate.pending}
           disabledReason={gate.reason}
-          label="Run"
+          label={gate.busyAny || queueLen > 0 ? "Queue" : "Run"}
+          icon={gate.busyAny || queueLen > 0 ? ListPlus : undefined}
           shortcut="Ctrl+Enter"
           onRun={onRun}
           onStop={() => void cancelActiveJob()}

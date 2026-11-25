@@ -101,6 +101,7 @@ export class Canvas2DMurmuration implements MurmurationBackend {
   private revealT = 0;
   private fadeOutT = 0;
   private fadeOutMs = C.CANCEL_FADE_MS;
+  private crisp = false;
 
   private readonly geo: StageGeometry = { cssW: 1, cssH: 1, pane: new Float32Array([0, 0, 0.6, 0.6]), paneCss: { x: 0, y: 0, w: 1, h: 1 } };
   private dpr = 1;
@@ -148,6 +149,7 @@ export class Canvas2DMurmuration implements MurmurationBackend {
     }
     this.releaseBitmaps();
     this.clip = opts.clipMask ?? null;
+    this.crisp = !!opts.crisp;
     this.mode = "run";
     this.time = 0;
     this.fadeIn = this.reduced ? 1 : 0;
@@ -187,6 +189,11 @@ export class Canvas2DMurmuration implements MurmurationBackend {
 
   setProgress(p: number): void {
     this.progressTarget = Math.max(this.progressTarget, clamp01(p) * 0.5);
+  }
+
+  setCrisp(on: boolean): void {
+    this.crisp = on;
+    this.dirty = true;
   }
 
   complete(final: ImageBitmap): Promise<void> {
@@ -468,7 +475,7 @@ export class Canvas2DMurmuration implements MurmurationBackend {
     target.fillRect(pc.x, pc.y, pc.w, pc.h);
 
     if (this.prevB && this.phaseB > 0) {
-      const blur = Math.round(C.CANVAS2D.blurMaxPx * (1 - this.progress) * (1 - reveal));
+      const blur = this.crisp ? 0 : Math.round(C.CANVAS2D.blurMaxPx * (1 - this.progress) * (1 - reveal));
       target.filter = BLUR_FILTERS[Math.min(C.CANVAS2D.blurMaxPx, Math.max(0, blur))];
       const pb = smoothstep(0, 1, this.phaseB);
       if (this.prevA && this.previewMix < 1) {

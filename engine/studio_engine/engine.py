@@ -52,6 +52,10 @@ class Engine:
         self.exit_code = 0
         self.stopped = asyncio.Event()
         self._proc = psutil.Process(os.getpid())
+        try:
+            psutil.cpu_percent(interval=None)
+        except Exception:
+            pass
         self._cuda = False
         self.settings_path = os.path.join(cfg.state_dir, "engine.json")
         self.settings = self._load_settings()
@@ -126,9 +130,13 @@ class Engine:
             rss = int(self._proc.memory_info().rss // MIB)
         except Exception:
             rss = 0
+        try:
+            cpu_pct = round(float(psutil.cpu_percent(interval=None)), 1)
+        except Exception:
+            cpu_pct = None
         m = {"vramTotalMb": vt, "vramUsedMb": max(0, vt - vf), "vramFreeMb": vf, "vramProcessMb": vp,
              "ramTotalMb": int(vm.total // MIB), "ramUsedMb": int((vm.total - vm.available) // MIB),
-             "ramProcessMb": rss}
+             "ramProcessMb": rss, "cpuUtilPct": cpu_pct}
         self._mem_cache = (time.monotonic(), m)
         return m
 
@@ -152,6 +160,7 @@ class Engine:
                 "vramTotalMb": m["vramTotalMb"], "vramUsedMb": m["vramUsedMb"], "vramFreeMb": m["vramFreeMb"],
                 "vramProcessMb": m["vramProcessMb"],
                 "ramTotalMb": m["ramTotalMb"], "ramUsedMb": m["ramUsedMb"], "ramProcessMb": m["ramProcessMb"],
+                "cpuUtilPct": m.get("cpuUtilPct"),
                 "gpuUtilPct": None, "activeJobId": self.active_job.id if self.active_job else None}
 
     async def health(self) -> dict:

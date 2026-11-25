@@ -39,75 +39,77 @@
 
 /* ───────── Base ───────── */
 
-html,
-body,
-#root {
-  height: 100%;
-  margin: 0;
-  overflow: hidden;
-}
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
 
-body,
-html[data-material="none"] body {
-  background: var(--bg-canvas);
-}
-html[data-material="mica"] body {
-  background: var(--bg-canvas-mica);
-}
+  body,
+  html[data-material="none"] body {
+    background: var(--bg-canvas);
+  }
+  html[data-material="mica"] body {
+    background: var(--bg-canvas-mica);
+  }
 
-body {
-  color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-feature-settings: "ss01", "cv11";
-  font-size: 14px;
-  line-height: 22px;
-  -webkit-font-smoothing: antialiased;
-  user-select: none;
-  cursor: default;
-}
+  body {
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv11";
+    font-size: 14px;
+    line-height: 22px;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    cursor: default;
+  }
 
-button,
-input,
-textarea,
-select {
-  font: inherit;
-  color: inherit;
-}
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
 
-button {
-  cursor: default;
-}
+  button {
+    cursor: default;
+  }
 
-textarea,
-input[type="text"],
-input[type="search"] {
-  user-select: text;
-}
+  textarea,
+  input[type="text"],
+  input[type="search"] {
+    user-select: text;
+  }
 
-::selection {
-  background: var(--selection);
-}
+  ::selection {
+    background: var(--selection);
+  }
 
-*:focus {
-  outline: none;
-}
-*:focus-visible {
-  outline: 2px solid var(--accent-ring);
-  outline-offset: 2px;
-}
+  *:focus {
+    outline: none;
+  }
+  *:focus-visible {
+    outline: 2px solid var(--accent-ring);
+    outline-offset: 2px;
+  }
 
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-::-webkit-scrollbar-thumb {
-  background: var(--surface-active);
-  border-radius: 999px;
-  border: 3px solid transparent;
-  background-clip: content-box;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--surface-active);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
 }
 
 /* ───────── Window regions ───────── */
@@ -298,12 +300,21 @@ input[type="search"] {
 }
 @keyframes studio-slide-in-right {
   from {
-    transform: translateX(24px);
+    transform: translateX(44px);
     opacity: 0;
   }
   to {
     transform: none;
     opacity: 1;
+  }
+}
+
+@keyframes studio-spring {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
   }
 }
 
@@ -323,7 +334,7 @@ input[type="search"] {
   animation: studio-spin 1s linear infinite;
 }
 .anim-drawer {
-  animation: studio-slide-in-right var(--dur-base) var(--ease-out) both;
+  animation: studio-slide-in-right 340ms var(--ease-out) both;
 }
 .murmur-pulse {
   animation: studio-pane-pulse 2s var(--ease-in-out) infinite;

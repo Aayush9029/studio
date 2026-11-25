@@ -27,7 +27,7 @@ export function BrushBar({ visible, onEyedropper, eyedropping }: { visible: bool
 
   return (
     <div
-      className={`glass absolute left-1/2 flex h-11 items-center gap-3 rounded-full px-3 transition-opacity duration-[var(--dur-fast)] ${visible ? "" : "pointer-events-none opacity-0"}`}
+      className={`glass no-scrollbar absolute left-1/2 flex h-11 max-w-[calc(100%-124px)] items-center gap-2.5 overflow-x-auto rounded-full px-3 transition-opacity duration-[var(--dur-fast)] ${visible ? "" : "pointer-events-none opacity-0"}`}
       style={{ top: 16, transform: "translateX(-50%)", zIndex: 20 }}
       aria-hidden={!visible}
     >
@@ -45,13 +45,14 @@ export function BrushBar({ visible, onEyedropper, eyedropping }: { visible: bool
         ariaLabel="Brush size"
         label="SIZE"
         micro
+        compact
         log
         value={size}
         min={1}
         max={512}
         step={1}
         defaultValue={48}
-        width={190}
+        width={144}
         format={(v) => `${Math.round(v)}`}
         onChange={(v) => patch({ brushSize: v })}
       />
@@ -59,12 +60,13 @@ export function BrushBar({ visible, onEyedropper, eyedropping }: { visible: bool
         ariaLabel="Hardness"
         label="HARD"
         micro
+        compact
         value={hardness}
         min={0}
         max={100}
         step={1}
         defaultValue={isMask ? 100 : 80}
-        width={170}
+        width={148}
         format={(v) => `${v}%`}
         onChange={(v) => patch(isMask ? { hardnessMask: v } : { hardnessPaint: v })}
       />
@@ -73,12 +75,13 @@ export function BrushBar({ visible, onEyedropper, eyedropping }: { visible: bool
           ariaLabel="Opacity"
           label="OPAC"
           micro
+          compact
           value={opacity}
           min={1}
           max={100}
           step={1}
           defaultValue={100}
-          width={170}
+          width={148}
           format={(v) => `${v}%`}
           onChange={(v) => patch({ opacity: v })}
         />

@@ -2,11 +2,12 @@ import { forwardRef, useImperativeHandle, useRef, useState, type DragEvent } fro
 import { useShallow } from "zustand/react/shallow";
 import { ImagePlus, X } from "lucide-react";
 import type { RemeshResolution, ThreeDRequest } from "../../shared/contract";
-import { REMESH_RESOLUTIONS } from "../../shared/families";
+import { REMESH_RESOLUTIONS, familyShortLabel } from "../../shared/families";
 import { useEngineStore, useInklingAvailable } from "../../stores/engine";
+import { useQueueStore } from "../../stores/queue";
 import { useThreeStore } from "../../stores/three";
 import { engineHttp } from "../../lib/engine/http";
-import { cancelActiveJob, submitJob } from "../../lib/engine/jobs";
+import { cancelActiveJob, enqueueOrSubmit } from "../../lib/engine/jobs";
 import { blobToBase64, imageFileFromEvent, pathForFile, pickImages } from "../../lib/images";
 import { formatCount } from "../../lib/format";
 import {
@@ -25,7 +26,7 @@ import { FamilyPill, SegmentRow, engineOptions } from "../../components/capsule/
 import { IconButton } from "../../components/ui/IconButton";
 import { Pill } from "../../components/ui/Pill";
 import { Popover } from "../../components/ui/Popover";
-import { PrimaryButton } from "../../components/ui/PrimaryButton";
+import { ListPlus, PrimaryButton, StopButton } from "../../components/ui/PrimaryButton";
 import { Segmented } from "../../components/ui/Segmented";
 import { Slider } from "../../components/ui/Slider";
 import { Switch } from "../../components/ui/misc";
@@ -64,6 +65,7 @@ export const ThreeCapsule = forwardRef<ThreeCapsuleHandle, { hidden?: boolean }>
   const isText = t.mode === "t23d";
   const hasInput = isText ? t.prompt.trim().length > 0 : !!t.source;
   const gate = usePrimaryGate("three", hasInput, isText ? "Describe one object" : "Add an image first");
+  const queueLen = useQueueStore((s) => s.items.length);
 
   const setSourceFile = (f: File) => {
     const p = pathForFile(f);
@@ -73,7 +75,7 @@ export const ThreeCapsule = forwardRef<ThreeCapsuleHandle, { hidden?: boolean }>
 
   const run = async () => {
     const s = useThreeStore.getState();
-    if (gate.disabled || gate.running) return;
+    if (gate.disabled) return;
     const req: ThreeDRequest = {
       mode: s.mode,
       engine: s.engine,
@@ -82,6 +84,7 @@ export const ThreeCapsule = forwardRef<ThreeCapsuleHandle, { hidden?: boolean }>
       targetFaces: s.targetFaces,
       remeshResolution: s.remesh,
     };
+    let previewUrl: string | null = null;
     if (s.mode === "t23d") {
       if (!s.prompt.trim()) return;
       req.prompt = s.prompt.trim();
@@ -89,12 +92,21 @@ export const ThreeCapsule = forwardRef<ThreeCapsuleHandle, { hidden?: boolean }>
     } else {
       const src = s.source;
       if (!src) return;
+      previewUrl = src.url;
       if (src.path) req.imagePath = src.path;
       else if (src.blob) req.imageBase64 = await blobToBase64(src.blob);
       else return;
       if (src.sourceId) req.sourceId = src.sourceId;
     }
-    await submitJob("three", () => engineHttp.threeD(req));
+    await enqueueOrSubmit({
+      owner: "three",
+      mode: s.mode,
+      label: req.prompt || "Image to 3D",
+      modelLabel: familyShortLabel(s.engine),
+      meta: `${formatCount(s.targetFaces)} faces`,
+      previewUrl,
+      execute: () => engineHttp.threeD(req),
+    });
   };
 
   const enhanceNow = async () => {
@@ -105,7 +117,7 @@ export const ThreeCapsule = forwardRef<ThreeCapsuleHandle, { hidden?: boolean }>
   };
 
   useImperativeHandle(ref, () => ({
-    run: () => (gate.running ? void cancelActiveJob() : void run()),
+    run: () => void run(),
     enhance: () => void enhanceNow(),
     focus: () => promptRef.current?.focus(),
     setSourceFile,
@@ -190,13 +202,15 @@ export const ThreeCapsule = forwardRef<ThreeCapsuleHandle, { hidden?: boolean }>
         <SeedPill seed={t.seed} locked={t.seedLocked} onSeed={(s) => t.patch({ seed: s })} onLock={(l) => t.patch({ seedLocked: l })} />
         <Spacer />
         {isText && <EnhanceButton on={t.enhance} busy={enhancing} onToggle={() => t.patch({ enhance: !t.enhance })} onEnhanceNow={() => void enhanceNow()} />}
+        {gate.running && <StopButton progress={gate.progress} onStop={() => void cancelActiveJob()} />}
         <PrimaryButton
-          running={gate.running}
-          progress={gate.progress}
+          running={false}
+          progress={0}
           disabled={gate.disabled}
           pending={gate.pending}
           disabledReason={gate.reason}
-          label="Generate 3D"
+          label={gate.busyAny || queueLen > 0 ? "Queue 3D" : "Generate 3D"}
+          icon={gate.busyAny || queueLen > 0 ? ListPlus : undefined}
           shortcut="Ctrl+Enter"
           onRun={() => void run()}
           onStop={() => void cancelActiveJob()}

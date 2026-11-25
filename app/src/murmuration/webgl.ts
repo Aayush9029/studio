@@ -125,6 +125,7 @@ export class WebGLMurmuration implements MurmurationBackend {
   private phaseB = 0;
   private hasPreview = false;
   private previewMix = 1;
+  private crisp = false;
   private progress = 0;
   private progressTarget = 0;
   private revealT = 0;
@@ -448,6 +449,7 @@ export class WebGLMurmuration implements MurmurationBackend {
     this.framesSinceBegin = 0;
     this.resetLadder();
     this.seed = opts.seed >>> 0;
+    this.crisp = !!opts.crisp;
     this.rung = Math.max(this.rung, sessionRung);
     this.applyRung();
     this.applySize();
@@ -491,6 +493,10 @@ export class WebGLMurmuration implements MurmurationBackend {
   setProgress(p: number): void {
     // Only used for preview-less jobs; never decreases.
     this.progressTarget = Math.max(this.progressTarget, clamp01(p) * 0.5);
+  }
+
+  setCrisp(on: boolean): void {
+    this.crisp = on;
   }
 
   complete(final: ImageBitmap): Promise<void> {
@@ -808,8 +814,8 @@ export class WebGLMurmuration implements MurmurationBackend {
     this.uDisperse = disperse;
     this.uFade = fade;
     this.uReveal = reveal;
-    this.uDistort = C.DISTORT_AMOUNT * Math.pow(1 - this.progress, C.DISTORT_POW) * (1 - reveal);
-    this.uFrost = C.FROST_MAX_LOD * (1 - smoothstep(0, 0.9, this.progress));
+    this.uDistort = this.crisp ? 0 : C.DISTORT_AMOUNT * Math.pow(1 - this.progress, C.DISTORT_POW) * (1 - reveal);
+    this.uFrost = this.crisp ? 0 : C.FROST_MAX_LOD * (1 - smoothstep(0, 0.6, this.progress));
     return true;
   }
 

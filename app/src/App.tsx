@@ -10,6 +10,8 @@ import { closeTopLayer, isTypingTarget } from "./lib/layers";
 import { Sidebar } from "./components/chrome/Sidebar";
 import { Titlebar } from "./components/chrome/Titlebar";
 import { ModelsDrawer } from "./components/chrome/ModelsDrawer";
+import { QueueDrawer } from "./components/chrome/QueueDrawer";
+import { DragOverlay } from "./components/chrome/DragOverlay";
 import { WhisperHost } from "./components/chrome/WhisperHost";
 import GenerateWorkspace from "./workspaces/generate/GenerateWorkspace";
 import EditWorkspace from "./workspaces/edit/EditWorkspace";
@@ -137,6 +139,8 @@ export default function App() {
         </div>
       </main>
       <ModelsDrawer />
+      <QueueDrawer />
+      <DragOverlay />
     </div>
   );
 }

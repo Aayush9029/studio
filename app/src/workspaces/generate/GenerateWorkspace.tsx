@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as RPointerEvent } from "react";
 import { flushSync } from "react-dom";
-import { Box, Brush, Copy, Download, Sparkles, Trash2 } from "lucide-react";
+import { Box, Brush, Copy, Download, FolderOpen, Sparkles, Trash2 } from "lucide-react";
 import type { OutputItem } from "../../shared/contract";
 import { createMurmuration, registerMurmuration, type MurmurationHandle } from "../../murmuration";
+import { hasStudioDrag, useDragStore } from "../../stores/drag";
+import { useEditStore } from "../../stores/edit";
 import { useGenerateStore } from "../../stores/generate";
 import { useJobStore } from "../../stores/job";
 import { useLibraryStore } from "../../stores/library";
@@ -10,11 +12,14 @@ import { useUiStore } from "../../stores/ui";
 import { registerJobHost } from "../../lib/engine/jobs";
 import { registerCommands } from "../../lib/commands";
 import { copyImage, copySeed, deleteItems, makeIn3D, openInEdit, saveCopy } from "../../lib/actions";
-import { fetchBlob, outputUrl } from "../../lib/images";
+import { fetchBlob, imageFileFromEvent, outputUrl, thumbUrl } from "../../lib/images";
+import { toUrl } from "../../lib/studio";
 import { formatDims, formatDuration, truncate } from "../../lib/format";
+import { EmptyGenerateIcon } from "../../components/ui/EmptyStateIcons";
 import { IconButton } from "../../components/ui/IconButton";
-import { EmptyState } from "../../components/ui/misc";
-import { Checker } from "../../components/ui/misc";
+import { Menu } from "../../components/ui/Menu";
+import { Pill } from "../../components/ui/Pill";
+import { Checker, EmptyState } from "../../components/ui/misc";
 import { LiveStatus } from "../LiveStatus";
 import { fitRect, paneRects, useStageSize } from "../useStageRect";
 import { Filmstrip } from "./Filmstrip";
@@ -38,10 +43,15 @@ export default function GenerateWorkspace({ active }: { active: boolean }) {
   const [runAspect, setRunAspect] = useState(1);
   const [inspecting, setInspecting] = useState(false);
   const [view, setView] = useState<View>(FIT);
+  const [dragOver, setDragOver] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
 
   const current = useGenerateStore((s) => s.current);
   const batchItems = useGenerateStore((s) => s.batchItems);
   const enhancedNote = useGenerateStore((s) => s.enhancedNote);
+  const pendingDrop = useGenerateStore((s) => s.pendingDrop);
+  const requestDrop = useGenerateStore((s) => s.requestDrop);
+  const ignoreGenerateDrop = useUiStore((s) => s.ignoreGenerateDrop);
   const width = useGenerateStore((s) => s.width);
   const height = useGenerateStore((s) => s.height);
   const capsuleH = useUiStore((s) => s.capsuleH.generate);
@@ -287,16 +297,59 @@ export default function GenerateWorkspace({ active }: { active: boolean }) {
   const empty = !current && phase === "idle";
   const meta = current && phase === "idle";
 
+  const onDrop = (e: DragEvent) => {
+    setDragOver(false);
+    if (ignoreGenerateDrop) {
+      e.preventDefault();
+      useDragStore.getState().end();
+      return;
+    }
+    const f = imageFileFromEvent(e.dataTransfer);
+    if (f) {
+      e.preventDefault();
+      useDragStore.getState().end();
+      requestDrop({ blob: f, url: URL.createObjectURL(f), name: f.name, sourceId: null });
+      return;
+    }
+    const drag = useDragStore.getState().item;
+    if (drag) {
+      e.preventDefault();
+      useDragStore.getState().end();
+      requestDrop({ url: drag.previewUrl || toUrl(drag.path), name: drag.name, sourceId: drag.item?.id ?? null });
+    }
+  };
+
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <div
         ref={stageRef}
         className="relative min-h-0 flex-1 overflow-hidden"
         style={{ cursor: inspecting ? (drag.current?.moved ? "grabbing" : "zoom-in") : undefined }}
+        onDragOver={(e) => {
+          if (hasStudioDrag(e.dataTransfer)) {
+            e.preventDefault();
+            if (!ignoreGenerateDrop) {
+              setDragOver(true);
+              useDragStore.getState().setHoverTarget("Drop image");
+            }
+          }
+        }}
+        onDragLeave={(e) => {
+          if (e.currentTarget === e.target) {
+            setDragOver(false);
+            useDragStore.getState().setHoverTarget(null);
+          }
+        }}
+        onDrop={onDrop}
       >
         {empty && (
           <div className="absolute inset-x-0 top-0 flex items-center justify-center" style={{ bottom: capsuleH + 56 }}>
-            <EmptyState lead="Describe an image," italic="then let it gather." sub="Ctrl+Enter to generate" />
+            <EmptyState
+              icon={<EmptyGenerateIcon size={56} className="text-ink-3" />}
+              lead="Describe an image,"
+              italic="then let it gather."
+              sub="Ctrl+Enter to generate"
+            />
           </div>
         )}
 
@@ -309,13 +362,32 @@ export default function GenerateWorkspace({ active }: { active: boolean }) {
               onPointerMove={onImgPointerMove}
               onPointerUp={onImgPointerUp}
               onDoubleClick={onImgDoubleClick}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setCtxMenu({ x: e.clientX, y: e.clientY });
+              }}
             >
               {current.hasAlpha && <Checker className="absolute inset-0 rounded-[var(--r-lg)]" />}
               <img
                 src={outputUrl(current)}
                 alt={truncate(current.params.prompt, 200)}
                 decoding="async"
-                draggable={false}
+                draggable={phase === "idle"}
+                onDragStart={(e) => {
+                  if (phase !== "idle") return;
+                  useDragStore.getState().start(
+                    {
+                      kind: current.kind,
+                      path: current.path,
+                      previewUrl: thumbUrl(current),
+                      name: current.file,
+                      item: current,
+                    },
+                    e.clientX,
+                    e.clientY,
+                    e.dataTransfer,
+                  );
+                }}
                 className="absolute inset-0 h-full w-full rounded-[var(--r-lg)] object-contain"
                 style={{
                   boxShadow: current.hasAlpha ? undefined : "var(--shadow-2)",
@@ -385,6 +457,70 @@ export default function GenerateWorkspace({ active }: { active: boolean }) {
 
         <canvas ref={canvasRef} aria-hidden className="pointer-events-none absolute inset-0 h-full w-full" />
         <LiveStatus ws="generate" />
+
+        {dragOver && <div className="pointer-events-none absolute inset-4 rounded-[var(--r-xl)]" style={{ boxShadow: "inset 0 0 0 2px var(--accent-ring)", zIndex: 25 }} />}
+
+        {pendingDrop && (
+          <div className="anim-fade absolute inset-0 flex items-center justify-center bg-[var(--scrim)] px-4" style={{ zIndex: 30 }}>
+            <div role="dialog" aria-modal="true" aria-label="Edit dropped image?" className="glass-strong anim-enter flex w-full max-w-[360px] flex-col gap-4 rounded-[var(--r-xl)] p-5">
+              <div className="flex items-center gap-3">
+                {pendingDrop.url && (
+                  <img src={pendingDrop.url} alt="" className="h-14 w-14 shrink-0 rounded-[var(--r-md)] bg-sunken object-cover" draggable={false} />
+                )}
+                <div className="min-w-0 flex-1">
+                  <h2 className="t-subhead m-0 text-ink">This is the Generate tab</h2>
+                  <p className="t-caption m-0 mt-0.5 text-ink-2">Would you like to edit this image?</p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Pill
+                  onClick={() => {
+                    useUiStore.getState().setIgnoreGenerateDrop(true);
+                    requestDrop(null);
+                  }}
+                >
+                  Don&apos;t ask again
+                </Pill>
+                <Pill onClick={() => requestDrop(null)}>Dismiss</Pill>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const drop = useGenerateStore.getState().pendingDrop;
+                    if (!drop) return;
+                    useEditStore.getState().requestOpen({ ...drop });
+                    useGenerateStore.setState({ pendingDrop: null });
+                    useUiStore.getState().setWorkspace("edit");
+                  }}
+                  className="t-ui inline-flex h-7 items-center rounded-full bg-accent px-3.5 text-on-accent hover:bg-[var(--accent-hover)]"
+                >
+                  Edit image
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <Menu
+          open={!!ctxMenu}
+          onClose={() => setCtxMenu(null)}
+          anchor={ctxMenu ?? { x: 0, y: 0 }}
+          ariaLabel="Image options"
+          items={
+            current
+              ? [
+                  { id: "edit", icon: Brush, label: "Edit in canvas", shortcut: "E", onSelect: () => openInEdit(current) },
+                  { id: "3d", icon: Box, label: "Make 3D", shortcut: "3", onSelect: () => makeIn3D(current) },
+                  "separator",
+                  { id: "save", icon: Download, label: "Save a copy…", shortcut: "Ctrl+S", onSelect: () => void saveCopy(current) },
+                  { id: "copy", icon: Copy, label: "Copy image", shortcut: "Ctrl+C", onSelect: () => void copyImage(current) },
+                  { id: "seed", label: "Copy seed", onSelect: () => void copySeed(current.params.seed) },
+                  { id: "reveal", icon: FolderOpen, label: "Reveal in Explorer", onSelect: () => void reveal(current) },
+                  "separator",
+                  { id: "delete", icon: Trash2, label: "Delete", shortcut: "Del", danger: true, onSelect: () => void deleteItems([current]) },
+                ]
+              : []
+          }
+        />
 
         {inspecting && (
           <div className="mono-sm pointer-events-none absolute left-1/2 -translate-x-1/2 rounded-full px-2 py-1 text-ink-3" style={{ bottom: 16 }}>

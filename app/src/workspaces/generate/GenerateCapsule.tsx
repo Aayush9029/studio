@@ -1,12 +1,12 @@
 import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { CircleMinus } from "lucide-react";
-import { staticFamily } from "../../shared/families";
-import { useEngineStore } from "../../stores/engine";
+import { staticFamily, familyShortLabel } from "../../shared/families";
+import { useEngineStore, useInklingAvailable } from "../../stores/engine";
 import { sizeMultiple, useGenerateStore } from "../../stores/generate";
-import { useInklingAvailable } from "../../stores/engine";
+import { useQueueStore } from "../../stores/queue";
 import { engineHttp } from "../../lib/engine/http";
-import { submitJob, cancelActiveJob } from "../../lib/engine/jobs";
+import { enqueueOrSubmit, cancelActiveJob } from "../../lib/engine/jobs";
 import {
   CapsuleRow,
   CapsuleShell,
@@ -20,7 +20,7 @@ import {
 } from "../../components/capsule/PromptCapsule";
 import { AspectPill, FamilyPill, IMAGE_MODEL_OPTIONS, SegmentRow, SettingsButton } from "../../components/capsule/pills";
 import { IconButton } from "../../components/ui/IconButton";
-import { PrimaryButton } from "../../components/ui/PrimaryButton";
+import { ListPlus, PrimaryButton, StopButton } from "../../components/ui/PrimaryButton";
 
 export interface GenerateCapsuleHandle {
   run(): void;
@@ -60,6 +60,7 @@ export const GenerateCapsule = forwardRef<GenerateCapsuleHandle, { hidden: boole
   const negRef = useRef<PromptFieldHandle>(null);
   const [enhancing, setEnhancing] = useState(false);
   const gate = usePrimaryGate("generate", g.prompt.trim().length > 0, "Describe an image");
+  const queueLen = useQueueStore((s) => s.items.length);
 
   const fam = models?.find((m) => m.id === g.model);
   const defaults = fam?.defaults ?? staticFamily(g.model).defaults!;
@@ -67,23 +68,31 @@ export const GenerateCapsule = forwardRef<GenerateCapsuleHandle, { hidden: boole
 
   const run = () => {
     const s = useGenerateStore.getState();
-    if (!s.prompt.trim() || gate.disabled || gate.running) return;
-    void submitJob("generate", () =>
-      engineHttp.t2i({
-        prompt: s.prompt.trim(),
-        negativePrompt: s.negative.trim(),
-        model: s.model,
-        width: s.width,
-        height: s.height,
-        seed: s.seedLocked ? s.seed : -1,
-        steps: s.steps,
-        cfg: s.cfg,
-        sampler: s.sampler,
-        scheduler: s.scheduler,
-        batchSize: s.batch,
-        enhancePrompt: s.enhance && inkling,
-      }),
-    );
+    const prompt = s.prompt.trim();
+    if (!prompt || gate.disabled) return;
+    const req = {
+      prompt,
+      negativePrompt: s.negative.trim(),
+      model: s.model,
+      width: s.width,
+      height: s.height,
+      seed: s.seedLocked ? s.seed : -1,
+      steps: s.steps,
+      cfg: s.cfg,
+      sampler: s.sampler,
+      scheduler: s.scheduler,
+      batchSize: s.batch,
+      enhancePrompt: s.enhance && inkling,
+    };
+    void enqueueOrSubmit({
+      owner: "generate",
+      mode: "t2i",
+      label: prompt,
+      modelLabel: familyShortLabel(s.model),
+      meta: `${s.width}×${s.height}${s.batch > 1 ? ` · ×${s.batch}` : ""}`,
+      previewUrl: null,
+      execute: () => engineHttp.t2i(req),
+    });
   };
 
   const enhanceNow = async () => {
@@ -100,7 +109,7 @@ export const GenerateCapsule = forwardRef<GenerateCapsuleHandle, { hidden: boole
   };
 
   useImperativeHandle(ref, () => ({
-    run: () => (gate.running ? void cancelActiveJob() : run()),
+    run: () => run(),
     enhance: () => void enhanceNow(),
     focus: () => promptRef.current?.focus(),
     toggleNegative,
@@ -173,13 +182,15 @@ export const GenerateCapsule = forwardRef<GenerateCapsuleHandle, { hidden: boole
         />
         <Spacer />
         <EnhanceButton on={g.enhance} busy={enhancing} onToggle={() => g.patch({ enhance: !g.enhance })} onEnhanceNow={() => void enhanceNow()} />
+        {gate.running && <StopButton progress={gate.progress} onStop={() => void cancelActiveJob()} />}
         <PrimaryButton
-          running={gate.running}
-          progress={gate.progress}
+          running={false}
+          progress={0}
           disabled={gate.disabled}
           pending={gate.pending}
           disabledReason={gate.reason}
-          label="Generate"
+          label={gate.busyAny || queueLen > 0 ? "Queue" : "Generate"}
+          icon={gate.busyAny || queueLen > 0 ? ListPlus : undefined}
           shortcut="Ctrl+Enter"
           onRun={run}
           onStop={() => void cancelActiveJob()}

@@ -14,6 +14,7 @@ export interface MurmurationHandle extends Murmuration {
   setActive(active: boolean): void;
   refreshTheme(): void;
   setProgress(p: number): void;
+  setCrisp(on: boolean): void;
   readonly backend: "pending" | "webgl2" | "canvas2d" | "reduced" | "none";
 }
 
@@ -131,6 +132,10 @@ class LazyMurmuration implements MurmurationHandle {
 
   setProgress(p: number): void {
     this.impl?.setProgress(p);
+  }
+
+  setCrisp(on: boolean): void {
+    this.impl?.setCrisp?.(on);
   }
 
   dispose(): void {

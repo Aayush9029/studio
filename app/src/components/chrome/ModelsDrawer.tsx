@@ -1,34 +1,61 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
-import { ChevronRight, Link2, LoaderCircle } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronRight, Copy, FolderOpen, Link2, LoaderCircle } from "lucide-react";
 import type { AutoUnloadMinutes, FamilyId, ModelFamilyStatus, ModelScan, ScannedModelFile, Telemetry } from "../../shared/contract";
 import { AUTO_UNLOAD_OPTIONS, FAMILIES, FAMILY_ORDER, ROLE_LABEL, offlineFamilyStatus, staticFamily } from "../../shared/families";
-import { enginePhase, useEngineStore } from "../../stores/engine";
-import { useJobStore } from "../../stores/job";
+import { enginePhase, useEngineStore, type TelemetrySample } from "../../stores/engine";
+import { useJobStore, type ActiveJob } from "../../stores/job";
 import { useUiStore } from "../../stores/ui";
 import { engineHttp, toStudioError } from "../../lib/engine/http";
+import { copyText } from "../../lib/actions";
 import { whisperError } from "../../lib/errors";
-import { clamp01 } from "../../lib/math";
-import { basename, formatBytes, formatCount, formatExactBytes, formatMemPair, formatParams, formatRelative, hasVram, mbToGb, middleEllipsis } from "../../lib/format";
+import { basename, formatBytes, formatCount, formatExactBytes, formatMemPair, formatParams, formatRelative, hasVram, middleEllipsis } from "../../lib/format";
 import { studio } from "../../lib/studio";
 import { useConfirm } from "../../lib/useConfirm";
 import { Drawer } from "../ui/Drawer";
+import { Menu } from "../ui/Menu";
 import { Pill } from "../ui/Pill";
 import { Segmented } from "../ui/Segmented";
+import { SquareMeterGraph } from "../ui/SquareMeterGraph";
 import { StateBadge } from "../ui/misc";
 import { Tooltip } from "../ui/Tooltip";
 
-/* Session cache of `studio-core scan-models` facts. */
 let scanCache: Promise<ModelScan | null> | null = null;
 function scanModels(): Promise<ModelScan | null> {
   if (!scanCache) scanCache = studio.core.scanModels().catch(() => null);
   return scanCache;
 }
 
+function isFamilyRunning(id: FamilyId, active: ActiveJob | null): boolean {
+  if (!active) return false;
+  if (active.model === id) return true;
+  const stageId = active.stages[active.stageIndex]?.id;
+  if (id === "birefnet" && (active.mode === "remove_bg" || (active.kind === "3d" && stageId === "cutout"))) return true;
+  if (id === "z_image" && active.mode === "t23d" && stageId === "source") return true;
+  return false;
+}
+
 export function ModelsDrawer() {
   const open = useUiStore((s) => s.modelsDrawerOpen);
   const close = useUiStore((s) => s.closeModels);
+  const active = useJobStore((s) => s.active);
+
   return (
-    <Drawer open={open} onClose={close} width="var(--drawer-w)" ariaLabel="Models & Memory" title={<h2 className="t-title m-0 text-ink">Models &amp; Memory</h2>} footer={open ? <DrawerFooter /> : null}>
+    <Drawer
+      open={open}
+      onClose={close}
+      width="var(--drawer-w)"
+      ariaLabel="Models & Memory"
+      title={<h2 className="t-title m-0 text-ink">Models &amp; Memory</h2>}
+      headerExtra={
+        active ? (
+          <span className="t-caption inline-flex items-center gap-1.5 rounded-full bg-accent-soft px-2.5 py-1 text-accent">
+            <LoaderCircle size={12} strokeWidth={2} className="anim-spin" />
+            <span>{active.phase === "sampling" && active.totalSteps > 0 ? `${active.step}/${active.totalSteps}` : "Running"}</span>
+          </span>
+        ) : undefined
+      }
+      footer={open ? <DrawerFooter /> : null}
+    >
       {open && <DrawerBody />}
     </Drawer>
   );
@@ -36,6 +63,7 @@ export function ModelsDrawer() {
 
 function DrawerBody() {
   const models = useEngineStore((s) => s.models);
+  const modelsDir = useEngineStore((s) => s.health?.modelsDir);
   const phase = useEngineStore((s) => enginePhase(s));
   const expandFamily = useUiStore((s) => s.expandFamily);
   const [scan, setScan] = useState<ModelScan | null>(null);
@@ -76,11 +104,11 @@ function DrawerBody() {
   const warmFamilies = useMemo(() => (online ? families.filter((f) => f.state === "warm") : NO_FAMILIES), [online, families]);
 
   return (
-    <div className="flex flex-col gap-6 pt-2">
-      <TelemetryBars online={online} coreTelemetry={coreTelemetry} warm={warmFamilies} />
+    <div className="flex flex-col gap-5 pt-2">
+      <TelemetryBars online={online} coreTelemetry={coreTelemetry} warm={warmFamilies} modelsDir={modelsDir} />
       <div className="flex flex-col">
         {families.map((f, i) => (
-          <FamilyCard key={f.id} family={f} scanned={scanned} online={online} first={i === 0} defaultOpen={expandFamily === f.id} />
+          <FamilyCard key={f.id} family={f} scanned={scanned} modelsDir={modelsDir} online={online} first={i === 0} defaultOpen={expandFamily === f.id} />
         ))}
       </div>
     </div>
@@ -89,101 +117,132 @@ function DrawerBody() {
 
 const NO_FAMILIES: ModelFamilyStatus[] = [];
 
-/** The only part of the drawer that subscribes to telemetry, so family cards don't re-render on every tick. */
-function TelemetryBars({ online, coreTelemetry, warm }: { online: boolean; coreTelemetry: Telemetry | null; warm: ModelFamilyStatus[] }) {
+function TelemetryBars({
+  online,
+  coreTelemetry,
+  warm,
+  modelsDir,
+}: {
+  online: boolean;
+  coreTelemetry: Telemetry | null;
+  warm: ModelFamilyStatus[];
+  modelsDir?: string;
+}) {
   const engineTelemetry = useEngineStore((s) => s.telemetry);
+  const history = useEngineStore((s) => s.history);
+  const healthModelsDir = useEngineStore((s) => s.health?.modelsDir);
   const telemetry = online ? engineTelemetry : (coreTelemetry ?? engineTelemetry);
-  return <MemoryBars telemetry={telemetry} warm={warm} />;
+  return <MemoryGraphs telemetry={telemetry} history={history} warm={warm} modelsDir={modelsDir ?? healthModelsDir} />;
 }
 
-/** A memory-bar segment spanning [start, start + len) of the track (fractions), positioned and
-    sized with a compositor-only transform so telemetry updates never re-layout the drawer. */
-function barStyle(start: number, len: number): CSSProperties {
-  return {
-    transform: `translateX(${clamp01(start) * 100}%) scaleX(${clamp01(len)})`,
-    transformOrigin: "left center",
-    transition: "transform 400ms linear",
-  };
-}
-
-function MemoryBars({ telemetry, warm }: { telemetry: Telemetry | null; warm: ModelFamilyStatus[] }) {
+function MemoryGraphs({
+  telemetry,
+  history,
+  warm,
+  modelsDir,
+}: {
+  telemetry: Telemetry | null;
+  history: TelemetrySample[];
+  warm: ModelFamilyStatus[];
+  modelsDir?: string;
+}) {
   const t = telemetry;
-  // Nullish/zero VRAM counters at runtime mean "unavailable", not "0 GB".
   const vramOk = hasVram(t);
   const vTotal = vramOk ? t!.vramTotalMb : 0;
   const vUsed = vramOk ? Math.max(0, t!.vramUsedMb) : 0;
   const rTotal = t?.ramTotalMb ?? 0;
   const rUsed = t?.ramUsedMb ?? 0;
-  let acc = 0;
-  const segs = warm.map((f, i) => {
-    const mb = Math.min(f.vramEstimateMb, Math.max(0, vUsed - acc));
-    const start = acc;
-    acc += mb;
-    return { id: f.id, label: f.label, mb, start, alt: i % 2 === 1 };
-  });
-  const other = Math.max(0, vUsed - acc);
-  const hotV = vTotal > 0 && vUsed / vTotal > 0.9;
-  const hotR = rTotal > 0 && rUsed / rTotal > 0.9;
+  const cpuRaw = t?.cpuUtilPct;
+  const cpuPct = cpuRaw != null && Number.isFinite(cpuRaw) ? Math.round(cpuRaw) : null;
+
+  const vramSamples = history.length ? history.map((h) => h.vramPct) : vTotal > 0 ? [(vUsed / vTotal) * 100] : [];
+  const ramSamples = history.length ? history.map((h) => h.ramPct) : rTotal > 0 ? [(rUsed / rTotal) * 100] : [];
+  const cpuSamples = history.length ? history.map((h) => h.cpuPct) : cpuPct != null ? [cpuPct] : [];
+
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-3">
-        <span className="t-ui w-[104px] shrink-0 text-ink-2">GPU memory</span>
-        <div className="relative h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-sunken" aria-hidden>
-          {vTotal > 0 &&
-            (segs.length ? (
-              <>
-                {segs.map((s) => (
-                  <Tooltip key={s.id} label={`${s.label} · ${mbToGb(s.mb)} GB (estimate)`} className="pointer-events-none absolute inset-0">
-                    <span
-                      className="pointer-events-auto absolute inset-0"
-                      style={{
-                        ...barStyle(s.start / vTotal, s.mb / vTotal),
-                        background: hotV ? "var(--warn)" : "var(--accent)",
-                        opacity: s.alt ? 0.7 : 1,
-                      }}
-                    />
-                  </Tooltip>
-                ))}
-                <span className="absolute inset-0 bg-ink-4" style={barStyle(acc / vTotal, other / vTotal)} />
-              </>
-            ) : (
-              <span className="absolute inset-0" style={{ ...barStyle(0, vUsed / vTotal), background: hotV ? "var(--warn)" : "var(--accent)" }} />
+    <div
+      className="flex flex-col gap-3 rounded-[var(--r-md)] bg-sunken p-3"
+      onContextMenu={(e) => {
+        if (!modelsDir) return;
+        e.preventDefault();
+        setCtxMenu({ x: e.clientX, y: e.clientY });
+      }}
+    >
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="t-ui text-ink-2">GPU memory</span>
+          <span className="mono-sm text-ink">{vramOk ? formatMemPair(vUsed, vTotal) : "—"}</span>
+        </div>
+        <SquareMeterGraph samples={vramSamples} cols={36} rows={5} cellSize={6} gap={3} color="var(--accent)" ariaLabel="GPU memory history" className="w-full" />
+        {warm.length > 0 && (
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5 pt-0.5">
+            {warm.map((f) => (
+              <span key={f.id} className="t-caption text-ink-3">
+                <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-accent align-middle" aria-hidden />
+                {staticFamily(f.id).label}
+              </span>
             ))}
-        </div>
-        <span className="mono-lg w-[120px] shrink-0 text-right text-ink">{vramOk ? formatMemPair(vUsed, vTotal) : "—"}</span>
+          </div>
+        )}
       </div>
-      <div className="flex items-center gap-3">
-        <span className="t-ui w-[104px] shrink-0 text-ink-2">System memory</span>
-        <div className="relative h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-sunken" aria-hidden>
-          {rTotal > 0 && (
-            <span className="absolute inset-0" style={{ ...barStyle(0, rUsed / rTotal), background: hotR ? "var(--warn)" : "var(--text-secondary)" }} />
-          )}
+
+      <div className="flex flex-col gap-1.5 border-t border-hairline pt-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="t-ui text-ink-2">System RAM</span>
+          <span className="mono-sm text-ink">{t ? formatMemPair(rUsed, rTotal) : "—"}</span>
         </div>
-        <span className="mono-lg w-[120px] shrink-0 text-right text-ink">{t ? formatMemPair(rUsed, rTotal) : "—"}</span>
+        <SquareMeterGraph samples={ramSamples} cols={36} rows={5} cellSize={6} gap={3} color="var(--text-secondary)" ariaLabel="System RAM history" className="w-full" />
       </div>
+
+      <div className="flex flex-col gap-1.5 border-t border-hairline pt-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="t-ui text-ink-2">CPU usage</span>
+          <span className="mono-sm text-ink">{cpuPct != null ? `${cpuPct}%` : "—"}</span>
+        </div>
+        <SquareMeterGraph samples={cpuSamples} cols={36} rows={5} cellSize={6} gap={3} color="var(--sage)" ariaLabel="CPU usage history" className="w-full" />
+      </div>
+
+      <Menu
+        open={!!ctxMenu}
+        onClose={() => setCtxMenu(null)}
+        anchor={ctxMenu ?? { x: 0, y: 0 }}
+        ariaLabel="Telemetry options"
+        items={
+          modelsDir
+            ? [{ id: "models-dir", icon: FolderOpen, label: "Open models folder", onSelect: () => void studio.files.reveal(modelsDir).catch(() => {}) }]
+            : []
+        }
+      />
     </div>
   );
 }
 
-/** Drawer card titles use the static family label (keeps the "3D ·" prefix). */
 const STATIC_LABEL = new Map<FamilyId, string>(FAMILIES.map((f) => [f.id, f.label]));
 
 function FamilyCard({
   family,
   scanned,
+  modelsDir,
   online,
   first,
   defaultOpen,
 }: {
   family: ModelFamilyStatus;
   scanned: Map<string, ScannedModelFile> | null;
+  modelsDir?: string;
   online: boolean;
   first: boolean;
   defaultOpen: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [pending, setPending] = useState(false);
-  const busy = useJobStore((s) => !!s.active);
+  const [ctx, setCtx] = useState<{ x: number; y: number; file?: ModelFamilyStatus["files"][number] } | null>(null);
+  const active = useJobStore((s) => s.active);
+  const busy = !!active;
+  const running = isFamilyRunning(family.id, active);
+
   useEffect(() => {
     if (defaultOpen) setOpen(true);
   }, [defaultOpen]);
@@ -205,14 +264,30 @@ function FamilyCard({
     }
   };
 
+  const firstExisting = family.files.find((f) => f.exists)?.path ?? modelsDir ?? null;
   const disabledReason = !online ? "Engine is not running" : busy ? "Busy generating" : missing && st !== "warm" ? "A model file is missing" : null;
   const actionLabel = st === "warm" ? "Unload" : "Warm up";
 
   return (
-    <section className={`flex flex-col gap-1.5 py-4 ${first ? "" : "border-t border-hairline"}`}>
+    <section
+      className={`flex flex-col gap-1.5 py-4 ${first ? "" : "border-t border-hairline"}`}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setCtx({ x: e.clientX, y: e.clientY });
+      }}
+    >
       <div className="flex items-center gap-3">
         <h3 className="t-heading m-0 min-w-0 flex-1 truncate text-ink">{STATIC_LABEL.get(family.id) ?? family.label}</h3>
-        <StateBadge state={st} />
+        {running ? (
+          <span className="inline-flex items-center gap-1.5 text-accent">
+            <LoaderCircle size={12} strokeWidth={2} className="anim-spin" />
+            <span className="t-caption">
+              Running{active?.phase === "sampling" && active.totalSteps > 0 ? ` · ${active.step}/${active.totalSteps}` : ""}
+            </span>
+          </span>
+        ) : (
+          <StateBadge state={st} />
+        )}
         {transitional ? (
           <Pill disabled aria-label={st === "unloading" ? "Unloading" : "Warming"}>
             <LoaderCircle size={14} strokeWidth={1.75} absoluteStrokeWidth className="anim-spin" />
@@ -248,7 +323,15 @@ function FamilyCard({
             const meta = h?.metadata ?? {};
             const extra = [meta["modelspec.architecture"], meta["modelspec.title"]].filter(Boolean).join(" · ");
             return (
-              <li key={f.relPath} className="flex flex-col gap-0.5">
+              <li
+                key={f.relPath}
+                className="flex flex-col gap-0.5 rounded-[var(--r-sm)] px-1 py-0.5 hover:bg-hover"
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setCtx({ x: e.clientX, y: e.clientY, file: f });
+                }}
+              >
                 <div className="flex items-center gap-2">
                   <span className="t-caption w-[104px] shrink-0 text-ink-2">{ROLE_LABEL[f.role]}</span>
                   <Tooltip label={f.relPath} className="min-w-0 flex-1">
@@ -278,6 +361,33 @@ function FamilyCard({
           })}
         </ul>
       )}
+      <Menu
+        open={!!ctx}
+        onClose={() => setCtx(null)}
+        anchor={ctx ? { x: ctx.x, y: ctx.y } : { x: 0, y: 0 }}
+        ariaLabel="Model options"
+        items={
+          ctx?.file
+            ? [
+                {
+                  id: "reveal-file",
+                  icon: FolderOpen,
+                  label: "Open folder in Explorer",
+                  disabled: !ctx.file.exists,
+                  onSelect: () => void studio.files.reveal(ctx.file!.path).catch(() => {}),
+                },
+                { id: "copy-file", icon: Copy, label: "Copy path", onSelect: () => void copyText(ctx.file!.path, "Path copied") },
+              ]
+            : [
+                ...(online && !busy && !(missing && st !== "warm")
+                  ? [{ id: "toggle", label: actionLabel, onSelect: () => void act() }]
+                  : []),
+                ...(firstExisting
+                  ? [{ id: "reveal-folder", icon: FolderOpen, label: "Open folder in Explorer", onSelect: () => void studio.files.reveal(firstExisting).catch(() => {}) }]
+                  : []),
+              ]
+        }
+      />
     </section>
   );
 }

@@ -58,10 +58,11 @@ export function StateBadge({ state, wordless }: { state: ModelState; wordless?: 
   );
 }
 
-/** Empty-state lines: serif display + muted body (§8.2). */
-export function EmptyState({ lead, italic, sub }: { lead: string; italic?: string; sub?: string }) {
+/** Empty-state lines: optional icon illustration + serif display + muted body + optional action (§8.2). */
+export function EmptyState({ icon, lead, italic, sub, action }: { icon?: ReactNode; lead: string; italic?: string; sub?: string; action?: ReactNode }) {
   return (
     <div className="pointer-events-none flex flex-col items-center gap-3 text-center">
+      {icon && <div className="mb-1 text-ink-3">{icon}</div>}
       <h1 className="t-display m-0 text-ink">
         {lead}
         {italic && (
@@ -72,6 +73,7 @@ export function EmptyState({ lead, italic, sub }: { lead: string; italic?: strin
         )}
       </h1>
       {sub && <p className="t-body m-0 text-ink-3">{sub}</p>}
+      {action && <div className="pointer-events-auto mt-1">{action}</div>}
     </div>
   );
 }

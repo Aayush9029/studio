@@ -1,26 +1,28 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Check, Circle, Rotate3d, RotateCcw, Send, Sun, type LucideIcon } from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type PointerEvent as RPointerEvent } from "react";
+import { Circle, Copy, Download, FolderOpen, Rotate3d, RotateCcw, Sun, type LucideIcon } from "lucide-react";
 import type { MeshExportFormat, OutputItem, Stage3DId } from "../../shared/contract";
 import { createMurmuration, registerMurmuration, type MurmurationHandle } from "../../murmuration";
-import { emptyMilestones, STAGE_ORDER, useThreeStore, type Lighting, type Milestone, type Shading } from "../../stores/three";
+import { hasStudioDrag, useDragStore } from "../../stores/drag";
+import { emptyMilestones, STAGE_LABEL, STAGE_ORDER, useThreeStore, type Lighting, type Milestone, type Shading } from "../../stores/three";
 import { useEngineStore } from "../../stores/engine";
 import { useJobStore } from "../../stores/job";
 import { useUiStore, say } from "../../stores/ui";
 import { registerJobHost } from "../../lib/engine/jobs";
 import { registerCommands } from "../../lib/commands";
-import { sendToBlender } from "../../lib/actions";
+import { copyText, reveal, sendToBlender } from "../../lib/actions";
 import { whisperError } from "../../lib/errors";
 import { toStudioError } from "../../lib/engine/http";
 import { basename, formatCount, formatMeters } from "../../lib/format";
 import { imageFileFromEvent, resolveAssetFile } from "../../lib/images";
 import { studio, toUrl } from "../../lib/studio";
+import { BlenderIcon, EmptyThreeIcon } from "../../components/ui/EmptyStateIcons";
 import { IconButton } from "../../components/ui/IconButton";
 import { Menu } from "../../components/ui/Menu";
 import { Pill } from "../../components/ui/Pill";
 import { Popover } from "../../components/ui/Popover";
 import { Slider } from "../../components/ui/Slider";
 import { Tooltip } from "../../components/ui/Tooltip";
-import { EmptyState, RailDivider } from "../../components/ui/misc";
+import { Checker, EmptyState, RailDivider } from "../../components/ui/misc";
 import { LiveStatus } from "../LiveStatus";
 import { paneRects, useStageSize, type Rect } from "../useStageRect";
 import { MilestoneStrip } from "./MilestoneStrip";
@@ -51,10 +53,17 @@ export default function ThreeWorkspace({ active }: { active: boolean }) {
   const murm = useRef<MurmurationHandle | null>(null);
   const capsule = useRef<ThreeCapsuleHandle>(null);
   const current = useThreeStore((s) => s.current);
-  const shapeStill = useThreeStore((s) => s.shapeStill);
+  const stageStill = useThreeStore((s) => s.stageStill);
+  const inspectStage = useThreeStore((s) => s.inspectStage);
+  const milestones = useThreeStore((s) => s.milestones);
   const running = useJobStore((s) => s.active?.owner === "three");
+  const livePreviewUrl = useJobStore((s) => (s.livePreviewOwner === "three" ? s.livePreviewUrl : null));
   const capsuleH = useUiStore((s) => s.capsuleH.three);
   const [loaded, setLoaded] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  const rightStart = useRef<{ x: number; y: number } | null>(null);
+  const rightMoved = useRef(false);
   const stage = useStageSize(stageRef);
 
   useEffect(() => {
@@ -100,12 +109,12 @@ export default function ThreeWorkspace({ active }: { active: boolean }) {
           if (!t.seedLocked) t.patch({ seed: e.seed });
           if (!e.replayed) {
             t.resetMilestones();
-            t.setShapeStill(null);
+            t.setStageStill(null);
           }
           t.setStripVisible(true);
           t.setMilestone("source", { status: "active" });
           layoutMurm();
-          murm.current?.begin({ aspect: 1, seed: e.seed });
+          murm.current?.begin({ aspect: 1, seed: e.seed, crisp: e.mode !== "t23d" });
         },
         progress: (e) => {
           const id = e.stageId as Stage3DId;
@@ -115,6 +124,7 @@ export default function ThreeWorkspace({ active }: { active: boolean }) {
           if (m.status === "pending" || m.status === "active") {
             t.setMilestone(id, { status: "active", step: e.phase === "sampling" ? e.step : 0, total: e.phase === "sampling" ? e.totalSteps : 0 });
           }
+          if (id === "structure" || id === "shape") murm.current?.setCrisp(true);
           if (id !== "source") murm.current?.setProgress(e.progress);
         },
         stagePreview: (e) => {
@@ -123,8 +133,12 @@ export default function ThreeWorkspace({ active }: { active: boolean }) {
           t.setMilestone(e.stageId, { status: e.status, imageUrl: url, step: 0, total: 0 });
           const next = STAGE_ORDER[STAGE_ORDER.indexOf(e.stageId) + 1];
           if (next && t.milestones[next].status === "pending") t.setMilestone(next, { status: "active" });
-          if (e.stageId === "shape" && url) {
-            t.setShapeStill(url);
+          if (url && e.stageId !== "mesh") {
+            t.setStageStill({ stageId: e.stageId, url });
+          }
+          if (e.stageId === "source") {
+            murm.current?.setCrisp(true);
+          } else if (e.stageId === "shape") {
             void murm.current?.finish();
           }
         },
@@ -141,12 +155,12 @@ export default function ThreeWorkspace({ active }: { active: boolean }) {
           const t = useThreeStore.getState();
           const id = e.stageIndex != null ? STAGE_ORDER[e.stageIndex] : STAGE_ORDER.find((s) => t.milestones[s].status === "active");
           if (id) t.setMilestone(id, { status: "error" });
-          t.setShapeStill(null);
+          t.setStageStill(null);
           void murm.current?.cancel();
         },
         cancelled: () => {
           const t = useThreeStore.getState();
-          t.setShapeStill(null);
+          t.setStageStill(null);
           if (t.current) t.setMilestones(milestonesFromItem(t.current));
           else t.setStripVisible(false);
           void murm.current?.cancel();
@@ -204,6 +218,13 @@ export default function ThreeWorkspace({ active }: { active: boolean }) {
         run: () => capsule.current?.run(),
         enhance: () => capsule.current?.enhance(),
         focusPrompt: () => capsule.current?.focus(),
+        escape: () => {
+          if (useThreeStore.getState().inspectStage) {
+            useThreeStore.getState().setInspectStage(null);
+            return true;
+          }
+          return false;
+        },
         key: (e, typing) => {
           if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "b") {
             void blenderAction();
@@ -233,11 +254,36 @@ export default function ThreeWorkspace({ active }: { active: boolean }) {
   );
 
   const glbUrl = current ? toUrl(current.path) : null;
-  const empty = !current && !running && !shapeStill;
+  const inspectedPreview = inspectStage && milestones[inspectStage]?.imageUrl ? { stageId: inspectStage, url: milestones[inspectStage].imageUrl! } : null;
+  const centerStill = inspectedPreview ?? (!livePreviewUrl && stageStill ? stageStill : null);
+  const empty = !current && !running && !centerStill && !livePreviewUrl;
   const mesh = current?.mesh;
   const blenderConnected = !!blender?.connected;
   const blenderInstalled = blender ? blender.installed : true;
   const stillRect = stage.w > 0 ? squarePane(stage.w, stage.h, capsuleH) : null;
+
+  const onStageDrop = (e: DragEvent) => {
+    setDragOver(false);
+    const f = imageFileFromEvent(e.dataTransfer);
+    if (f) {
+      e.preventDefault();
+      useDragStore.getState().end();
+      capsule.current?.setSourceFile(f);
+      return;
+    }
+    const drag = useDragStore.getState().item;
+    if (drag) {
+      e.preventDefault();
+      useDragStore.getState().end();
+      const t = useThreeStore.getState();
+      if (drag.item?.kind === "3d") {
+        t.setCurrent(drag.item);
+      } else {
+        t.patch({ mode: "i23d" });
+        t.setSource({ path: drag.path, blob: null, url: drag.previewUrl || toUrl(drag.path), sourceId: drag.item?.id ?? null });
+      }
+    }
+  };
 
   return (
     <div
@@ -245,50 +291,88 @@ export default function ThreeWorkspace({ active }: { active: boolean }) {
       className="relative h-full min-h-0 overflow-hidden"
       style={{ background: "linear-gradient(to bottom, var(--viewport-bg-top), var(--viewport-bg-bottom))" }}
       onDragOver={(e) => {
-        if (Array.from(e.dataTransfer.types).includes("Files")) e.preventDefault();
+        if (hasStudioDrag(e.dataTransfer)) {
+          e.preventDefault();
+          setDragOver(true);
+          useDragStore.getState().setHoverTarget("Use in 3D");
+        }
       }}
-      onDrop={(e) => {
-        const f = imageFileFromEvent(e.dataTransfer);
-        if (!f) return;
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target) {
+          setDragOver(false);
+          useDragStore.getState().setHoverTarget(null);
+        }
+      }}
+      onDrop={onStageDrop}
+      onPointerDown={(e: RPointerEvent<HTMLDivElement>) => {
+        if (e.button === 2) {
+          rightStart.current = { x: e.clientX, y: e.clientY };
+          rightMoved.current = false;
+        }
+      }}
+      onPointerMove={(e: RPointerEvent<HTMLDivElement>) => {
+        if (rightStart.current && Math.hypot(e.clientX - rightStart.current.x, e.clientY - rightStart.current.y) > 4) {
+          rightMoved.current = true;
+        }
+      }}
+      onContextMenu={(e) => {
+        if (!current) return;
         e.preventDefault();
-        capsule.current?.setSourceFile(f);
+        if (!rightMoved.current) setCtxMenu({ x: e.clientX, y: e.clientY });
+        rightStart.current = null;
+        rightMoved.current = false;
       }}
     >
       <Suspense fallback={null}>
         <Viewport3D
           glbUrl={glbUrl}
           active={active}
-          dimmed={running}
+          dimmed={running || !!inspectedPreview}
           onLoaded={() => {
             setLoaded(true);
-            useThreeStore.getState().setShapeStill(null);
+            useThreeStore.getState().setStageStill(null);
           }}
           onError={() => {
-            useThreeStore.getState().setShapeStill(null);
+            useThreeStore.getState().setStageStill(null);
             say("Couldn't open that mesh.", { tone: "error" });
           }}
         />
       </Suspense>
 
-      {shapeStill && stillRect && (
-        <img
-          src={shapeStill}
-          alt="Shape preview"
-          className="anim-fade pointer-events-none absolute object-contain"
-          style={{ left: stillRect.x, top: stillRect.y, width: stillRect.w, height: stillRect.h }}
-        />
+      {centerStill && stillRect && (
+        <div
+          className="anim-fade pointer-events-none absolute flex items-center justify-center overflow-hidden rounded-[var(--r-lg)]"
+          style={{ left: stillRect.x, top: stillRect.y, width: stillRect.w, height: stillRect.h, zIndex: 4 }}
+        >
+          {centerStill.stageId === "cutout" ? (
+            <Checker className="h-full w-full rounded-[var(--r-lg)]">
+              <img src={centerStill.url} alt={`${STAGE_LABEL[centerStill.stageId]} preview`} className="h-full w-full object-contain" />
+            </Checker>
+          ) : (
+            <img src={centerStill.url} alt={`${STAGE_LABEL[centerStill.stageId]} preview`} className="h-full w-full rounded-[var(--r-lg)] object-contain" />
+          )}
+          <span className="glass mono-sm absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full px-3 py-1 text-ink">
+            {STAGE_LABEL[centerStill.stageId]}{inspectedPreview ? " · Esc to close" : ""}
+          </span>
+        </div>
       )}
 
-      <canvas ref={murmCanvas} aria-hidden className="pointer-events-none absolute inset-0 h-full w-full" style={{ zIndex: 5 }} />
+      <canvas ref={murmCanvas} aria-hidden className="pointer-events-none absolute inset-0 h-full w-full" style={{ zIndex: 6 }} />
       <LiveStatus ws="three" verb="Making 3D" />
 
       {empty && (
         <div className="absolute inset-x-0 top-0 flex items-center justify-center" style={{ bottom: capsuleH + 40 }}>
-          <EmptyState lead="Give it a subject," italic="get it in the round." sub="Text or a single image" />
+          <EmptyState
+            icon={<EmptyThreeIcon size={56} className="text-ink-3" />}
+            lead="Give it a subject,"
+            italic="get it in the round."
+            sub="Text or a single image"
+          />
         </div>
       )}
+      {dragOver && <div className="pointer-events-none absolute inset-4 rounded-[var(--r-xl)]" style={{ boxShadow: "inset 0 0 0 2px var(--accent-ring)", zIndex: 25 }} />}
 
-      <div className="absolute left-4 top-4" style={{ zIndex: 20 }}>
+      <div className="absolute left-4 top-1/2 -translate-y-1/2" style={{ zIndex: 20 }}>
         <MilestoneStrip />
       </div>
 
@@ -318,23 +402,46 @@ export default function ThreeWorkspace({ active }: { active: boolean }) {
             type="button"
             disabled={(blenderConnected && (!current || running)) || launching || !blenderInstalled}
             onClick={() => void blenderAction()}
-            className="t-ui inline-flex h-9 items-center gap-2 rounded-full bg-accent-soft pl-3 pr-3 text-accent transition-opacity hover:opacity-90 disabled:opacity-40"
+            className={`t-ui inline-flex h-9 items-center gap-2 rounded-full pl-3 pr-3.5 transition-opacity hover:opacity-90 disabled:opacity-40 ${
+              blenderConnected ? "bg-accent text-on-accent" : "glass text-ink"
+            }`}
           >
-            {sent ? <Check size={16} strokeWidth={1.75} absoluteStrokeWidth /> : <Send size={16} strokeWidth={1.75} absoluteStrokeWidth />}
+            <BlenderIcon size={16} colored={!blenderConnected ? true : false} className="shrink-0" />
             <span>{sent ? "Sent" : blenderConnected ? "Send to Blender" : "Open Blender"}</span>
-            <span
-              aria-hidden
-              className="ml-0.5 h-1.5 w-1.5 rounded-full"
-              style={blenderConnected ? { background: "var(--sage)" } : { boxShadow: "inset 0 0 0 1px var(--text-faint)" }}
-            />
           </button>
         </Tooltip>
       </div>
 
+      <Menu
+        open={!!ctxMenu}
+        onClose={() => setCtxMenu(null)}
+        anchor={ctxMenu ?? { x: 0, y: 0 }}
+        ariaLabel="3D options"
+        items={
+          current
+            ? [
+                {
+                  id: "blender",
+                  label: blenderConnected ? "Send to Blender" : "Open Blender",
+                  disabled: !blenderInstalled || launching,
+                  onSelect: () => void blenderAction(),
+                },
+                { id: "export-glb", icon: Download, label: "Export .glb", onSelect: () => void doExport("glb") },
+                { id: "reset", icon: RotateCcw, label: "Reset view", shortcut: "0", onSelect: () => viewportBus.preset("reset") },
+                "separator",
+                ...(current.params.prompt
+                  ? [{ id: "copy-prompt", icon: Copy, label: "Copy prompt", onSelect: () => void copyText(current.params.prompt, "Prompt copied") }]
+                  : []),
+                { id: "reveal", icon: FolderOpen, label: "Reveal in Explorer", onSelect: () => void reveal(current) },
+              ]
+            : []
+        }
+      />
+
       <ViewportRail disabled={!current} />
 
       {mesh && loaded && (
-        <div className="mono-sm pointer-events-none absolute left-4 text-ink-3" style={{ bottom: capsuleH + 36, zIndex: 20 }}>
+        <div className="mono-sm pointer-events-none absolute left-4 top-4 text-ink-3" style={{ zIndex: 20 }}>
           V {formatCount(mesh.vertices)} · T {formatCount(mesh.triangles)} · {formatMeters(mesh.size)}
         </div>
       )}

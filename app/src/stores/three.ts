@@ -54,8 +54,10 @@ interface ThreeState extends ThreePersisted {
   current: OutputItem | null;
   milestones: Record<Stage3DId, Milestone>;
   stripVisible: boolean;
-  /** Clay thumbnail shown large while the final GLB is still coming. */
-  shapeStill: string | null;
+  /** Latest completed stage thumbnail shown large while downstream stages run. */
+  stageStill: { stageId: Stage3DId; url: string } | null;
+  /** Stage selected by clicking a milestone tile to inspect in the center viewport. */
+  inspectStage: Stage3DId | null;
 
   patch(p: Partial<ThreePersisted>): void;
   setSource(s: ThreeSource | null): void;
@@ -64,7 +66,8 @@ interface ThreeState extends ThreePersisted {
   setMilestone(id: Stage3DId, m: Partial<Milestone>): void;
   setMilestones(m: Record<Stage3DId, Milestone>): void;
   setStripVisible(v: boolean): void;
-  setShapeStill(url: string | null): void;
+  setStageStill(s: { stageId: Stage3DId; url: string } | null): void;
+  setInspectStage(id: Stage3DId | null): void;
   hydrate(p: Partial<ThreePersisted>): void;
 }
 
@@ -98,7 +101,8 @@ export const useThreeStore = create<ThreeState>()((set) => ({
   current: null,
   milestones: emptyMilestones(),
   stripVisible: false,
-  shapeStill: null,
+  stageStill: null,
+  inspectStage: null,
 
   patch: (p) => set(p),
   setSource: (s) =>
@@ -108,12 +112,13 @@ export const useThreeStore = create<ThreeState>()((set) => ({
       if (prev?.url.startsWith("blob:") && prev.url !== s?.url) URL.revokeObjectURL(prev.url);
       return { source: s };
     }),
-  setCurrent: (item) => set({ current: item }),
-  resetMilestones: () => set({ milestones: emptyMilestones() }),
+  setCurrent: (item) => set({ current: item, inspectStage: null }),
+  resetMilestones: () => set({ milestones: emptyMilestones(), inspectStage: null }),
   setMilestone: (id, m) => set((s) => ({ milestones: { ...s.milestones, [id]: { ...s.milestones[id], ...m } } })),
   setMilestones: (m) => set({ milestones: m }),
   setStripVisible: (v) => set({ stripVisible: v }),
-  setShapeStill: (url) => set({ shapeStill: url }),
+  setStageStill: (stageStill) => set({ stageStill }),
+  setInspectStage: (inspectStage) => set({ inspectStage }),
   hydrate: (p) =>
     set(() => {
       const out: Record<string, unknown> = {};

@@ -1,15 +1,21 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as RPointerEvent } from "react";
+import { CircleSlash, Contrast, Eye, EyeOff, FolderOpen, Scan, Scissors } from "lucide-react";
 import type { EditRequest, JobMode, OutputItem } from "../../shared/contract";
 import { createMurmuration, registerMurmuration, type MurmurationHandle } from "../../murmuration";
+import { hasStudioDrag, useDragStore } from "../../stores/drag";
 import { editDefaultSteps, useEditStore } from "../../stores/edit";
 import { useJobStore } from "../../stores/job";
+import { useLibraryStore } from "../../stores/library";
 import { useUiStore, say } from "../../stores/ui";
 import { useInklingAvailable } from "../../stores/engine";
+import { reveal } from "../../lib/actions";
 import { engineHttp } from "../../lib/engine/http";
-import { registerJobHost, submitJob } from "../../lib/engine/jobs";
+import { enqueueOrSubmit, registerJobHost } from "../../lib/engine/jobs";
 import { registerCommands } from "../../lib/commands";
 import { blobToBase64, canvasToPng, dataUrlToBlob, decodeFitted, fetchBlob, imageFileFromEvent, outputUrl, pickImages } from "../../lib/images";
-import { studio } from "../../lib/studio";
+import { studio, toUrl } from "../../lib/studio";
+import { EmptyEditIcon } from "../../components/ui/EmptyStateIcons";
+import { Menu } from "../../components/ui/Menu";
 import { EmptyState } from "../../components/ui/misc";
 import { LiveStatus } from "../LiveStatus";
 import { BrushBar } from "./BrushBar";
@@ -20,6 +26,7 @@ import { CompareOverlay, ReferenceStrip, ToolRail, ViewCluster } from "./EditRai
 
 export default function EditWorkspace({ active }: { active: boolean }) {
   const stageRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const murmCanvasRef = useRef<HTMLCanvasElement>(null);
   const capsule = useRef<EditCapsuleHandle>(null);
@@ -35,23 +42,41 @@ export default function EditWorkspace({ active }: { active: boolean }) {
   const [altHeld, setAltHeld] = useState(false);
   const [eyedropMode, setEyedropMode] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  const rightStart = useRef<{ x: number; y: number } | null>(null);
+  const rightMoved = useRef(false);
   const jobMode = useRef<JobMode | null>(null);
   const clipForJob = useRef<ImageBitmap | null>(null);
 
   const tool = useEditStore((s) => s.tool);
   const mode = useEditStore((s) => s.mode);
   const hasDoc = useEditStore((s) => s.doc.hasDoc);
+  const maskEmpty = useEditStore((s) => s.doc.maskEmpty);
+  const sourceId = useEditStore((s) => s.doc.sourceId);
   const compare = useEditStore((s) => s.compare);
   const split = useEditStore((s) => s.split);
   const maskVisible = useEditStore((s) => s.maskVisible);
   const pendingOpen = useEditStore((s) => s.pendingOpen);
   const capsuleH = useUiStore((s) => s.capsuleH.edit);
   const running = useJobStore((s) => s.active?.owner === "edit");
-  const busyAny = useJobStore((s) => !!s.active);
   const inkling = useInklingAvailable();
 
   const refsVisible = mode === "qwen_edit" && hasDoc;
-  const insets = useMemo(() => ({ top: 72, left: 80, right: refsVisible ? 112 : 72, bottom: capsuleH + 44 }), [refsVisible, capsuleH]);
+  const insets = useMemo(() => ({ top: 76, left: 76, right: refsVisible ? 104 : 48, bottom: capsuleH + 40 }), [refsVisible, capsuleH]);
+
+  const syncDotGrid = useCallback(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    let step = doc.hasDoc ? 24 * doc.view.scale : 24;
+    while (step < 14) step *= 2;
+    while (step > 48) step /= 2;
+    const ox = doc.hasDoc ? ((doc.view.tx % step) + step) % step : step * 0.5;
+    const oy = doc.hasDoc ? ((doc.view.ty % step) + step) % step : step * 0.5;
+    el.style.backgroundImage = "radial-gradient(circle, var(--border-strong) 1.15px, transparent 1.15px)";
+    el.style.backgroundSize = `${step.toFixed(2)}px ${step.toFixed(2)}px`;
+    el.style.backgroundPosition = `${ox.toFixed(2)}px ${oy.toFixed(2)}px`;
+    el.style.opacity = doc.hasDoc ? "0.75" : "0.55";
+  }, [doc]);
 
   // ───────── Document + canvas wiring ─────────
   useEffect(() => {
@@ -69,15 +94,20 @@ export default function EditWorkspace({ active }: { active: boolean }) {
       });
       setContentVersion(c.contentVersion);
       setViewTick((t) => t + 1);
+      syncDotGrid();
       if (!c.hasBefore && useEditStore.getState().compare) useEditStore.getState().setCompare(false);
     });
-    const obs = new MutationObserver(() => doc.refreshTheme());
+    syncDotGrid();
+    const obs = new MutationObserver(() => {
+      doc.refreshTheme();
+      syncDotGrid();
+    });
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     return () => {
       obs.disconnect();
       doc.dispose();
     };
-  }, [doc]);
+  }, [doc, syncDotGrid]);
 
   // Canvas client rect, cached between layout changes (pointer moves read it per event).
   const canvasRect = useRef<DOMRect | null>(null);
@@ -137,14 +167,15 @@ export default function EditWorkspace({ active }: { active: boolean }) {
     if (running) layoutMurm();
   }, [running, viewTick, layoutMurm]);
 
-  // Pans bypass React entirely; only the pieces that track the document rect follow along.
+  // Pans bypass React entirely; dot-grid, compare overlay, and murmuration follow along.
   useEffect(() => {
     doc.onView(() => {
+      syncDotGrid();
       if (useJobStore.getState().active?.owner === "edit") layoutMurm();
       if (useEditStore.getState().compare) setViewTick((t) => t + 1);
     });
     return () => doc.onView(null);
-  }, [doc, layoutMurm]);
+  }, [doc, layoutMurm, syncDotGrid]);
 
   // ───────── Opening images ─────────
   const openBlob = useCallback(
@@ -204,8 +235,6 @@ export default function EditWorkspace({ active }: { active: boolean }) {
   // ───────── Running jobs ─────────
   const run = useCallback(async () => {
     const s = useEditStore.getState();
-    const js = useJobStore.getState();
-    if (js.active) return;
     if (!doc.hasDoc) return;
     if (s.mode === "inpaint" && s.doc.maskEmpty) {
       s.setTool("mask");
@@ -216,8 +245,6 @@ export default function EditWorkspace({ active }: { active: boolean }) {
       capsule.current?.focus();
       return;
     }
-    // Snapshot base+paint, mask and clip synchronously, before any await: pointer input that
-    // lands while PNGs encode can't leak into (or mix revisions of) this request.
     const mode = s.mode;
     const cap = doc.captureSubmission({ mask: mode === "inpaint", clip: mode === "inpaint" });
     if (!cap) return;
@@ -244,9 +271,12 @@ export default function EditWorkspace({ active }: { active: boolean }) {
       if (refs.length) req.referenceImages = refs;
     }
     let clip: ImageBitmap | null = null;
+    let previewUrl: string | null = null;
     try {
+      const imgBlob = await canvasToPng(cap.image);
+      previewUrl = URL.createObjectURL(imgBlob);
       const [img, msk, clp] = await Promise.allSettled([
-        canvasToPng(cap.image).then(blobToBase64),
+        blobToBase64(imgBlob),
         cap.mask ? canvasToPng(cap.mask).then(blobToBase64) : Promise.resolve(null),
         cap.clip ? createImageBitmap(cap.clip) : Promise.resolve(null),
       ]);
@@ -255,36 +285,71 @@ export default function EditWorkspace({ active }: { active: boolean }) {
       if (msk.status === "rejected") throw msk.reason;
       req.imageBase64 = img.value;
       if (msk.value) req.maskBase64 = msk.value;
-      if (useJobStore.getState().active) return;
-      // Hand the clip to the job binding; `started` passes it on to the Murmuration.
-      clipForJob.current?.close();
-      clipForJob.current = clip;
+      const ownedClip = clip;
+      const ownedPreview = previewUrl;
       clip = null;
-      const jobId = await submitJob("edit", () => engineHttp.edit(req));
-      if (!jobId && clipForJob.current) {
-        clipForJob.current.close();
-        clipForJob.current = null;
-      }
+      previewUrl = null;
+      await enqueueOrSubmit({
+        owner: "edit",
+        mode,
+        label: req.prompt || mode,
+        modelLabel: mode === "qwen_edit" ? "Qwen-Image 2.1" : "Z-Image Turbo",
+        meta: `${doc.width}×${doc.height}`,
+        previewUrl: ownedPreview,
+        cleanup: () => {
+          if (ownedPreview) URL.revokeObjectURL(ownedPreview);
+          if (ownedClip && clipForJob.current !== ownedClip) ownedClip.close();
+        },
+        execute: async () => {
+          clipForJob.current?.close();
+          clipForJob.current = ownedClip;
+          try {
+            return await engineHttp.edit(req);
+          } catch (err) {
+            if (clipForJob.current === ownedClip) {
+              clipForJob.current?.close();
+              clipForJob.current = null;
+            }
+            throw err;
+          }
+        },
+      });
     } catch {
-      say("Couldn't prepare the image.", { tone: "error" });
-    } finally {
       clip?.close();
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      say("Couldn't prepare the image.", { tone: "error" });
     }
   }, [doc, inkling]);
 
   const removeBg = useCallback(async () => {
-    if (!doc.hasDoc || useJobStore.getState().active) return;
+    if (!doc.hasDoc) return;
     const s = useEditStore.getState();
     const cap = doc.captureSubmission();
     if (!cap) return;
     let imageBase64: string;
+    let previewUrl: string | null = null;
     try {
-      imageBase64 = await blobToBase64(await canvasToPng(cap.image));
+      const blob = await canvasToPng(cap.image);
+      previewUrl = URL.createObjectURL(blob);
+      imageBase64 = await blobToBase64(blob);
     } catch {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
       say("Couldn't prepare the image.", { tone: "error" });
       return;
     }
-    await submitJob("edit", () => engineHttp.edit({ mode: "remove_bg", imageBase64, ...(s.doc.sourceId ? { sourceId: s.doc.sourceId } : {}) }));
+    const ownedPreview = previewUrl;
+    await enqueueOrSubmit({
+      owner: "edit",
+      mode: "remove_bg",
+      label: "Remove background",
+      modelLabel: "BiRefNet",
+      meta: `${doc.width}×${doc.height}`,
+      previewUrl: ownedPreview,
+      cleanup: () => {
+        if (ownedPreview) URL.revokeObjectURL(ownedPreview);
+      },
+      execute: () => engineHttp.edit({ mode: "remove_bg", imageBase64, ...(s.doc.sourceId ? { sourceId: s.doc.sourceId } : {}) }),
+    });
   }, [doc]);
 
   const applyResult = useCallback(
@@ -370,6 +435,13 @@ export default function EditWorkspace({ active }: { active: boolean }) {
     const p = localPoint(e);
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
+    if (e.button === 2) {
+      rightStart.current = { x: e.clientX, y: e.clientY };
+      rightMoved.current = false;
+    } else {
+      rightStart.current = null;
+      rightMoved.current = false;
+    }
     if (e.button === 1 || e.button === 2 || effectiveTool === "select" || compare) {
       panning.current = { x: e.clientX, y: e.clientY };
       setPanningActive(true);
@@ -394,6 +466,9 @@ export default function EditWorkspace({ active }: { active: boolean }) {
     const r = getCanvasRect();
     const p = localPoint(e, r);
     if (panning.current) {
+      if (rightStart.current && Math.hypot(e.clientX - rightStart.current.x, e.clientY - rightStart.current.y) > 4) {
+        rightMoved.current = true;
+      }
       doc.panBy(e.clientX - panning.current.x, e.clientY - panning.current.y);
       panning.current = { x: e.clientX, y: e.clientY };
       return;
@@ -516,9 +591,25 @@ export default function EditWorkspace({ active }: { active: boolean }) {
   const onDrop = (e: DragEvent) => {
     setDragOver(false);
     const f = imageFileFromEvent(e.dataTransfer);
-    if (!f) return;
-    e.preventDefault();
-    void openBlob(f, f.name, null);
+    if (f) {
+      e.preventDefault();
+      useDragStore.getState().end();
+      void openBlob(f, f.name, null);
+      return;
+    }
+    const drag = useDragStore.getState().item;
+    if (drag) {
+      e.preventDefault();
+      useDragStore.getState().end();
+      void (async () => {
+        try {
+          const blob = await fetchBlob(toUrl(drag.path));
+          await openBlob(blob, drag.name, drag.item?.id ?? null);
+        } catch {
+          say("That file isn't an image Studio can read.", { tone: "error" });
+        }
+      })();
+    }
   };
 
   const brushVisible = hasDoc && (tool === "brush" || tool === "mask" || tool === "eraser") && !compare;
@@ -536,22 +627,31 @@ export default function EditWorkspace({ active }: { active: boolean }) {
               : "none";
   void viewTick;
   const rect = doc.docRect();
+  const sourceItem = useMemo(
+    () => (sourceId ? useLibraryStore.getState().items.find((i) => i.id === sourceId) ?? null : null),
+    [sourceId, contentVersion],
+  );
 
   return (
     <div
       ref={stageRef}
-      className="relative h-full min-h-0 overflow-hidden"
+      className="relative h-full min-h-0 overflow-hidden bg-stage"
       onDragOver={(e) => {
-        if (Array.from(e.dataTransfer.types).includes("Files")) {
+        if (hasStudioDrag(e.dataTransfer)) {
           e.preventDefault();
           setDragOver(true);
+          useDragStore.getState().setHoverTarget("Open in Edit");
         }
       }}
       onDragLeave={(e) => {
-        if (e.currentTarget === e.target) setDragOver(false);
+        if (e.currentTarget === e.target) {
+          setDragOver(false);
+          useDragStore.getState().setHoverTarget(null);
+        }
       }}
       onDrop={onDrop}
     >
+      <div ref={gridRef} aria-hidden className="pointer-events-none absolute inset-0" />
       <canvas
         ref={canvasRef}
         aria-hidden
@@ -562,14 +662,25 @@ export default function EditWorkspace({ active }: { active: boolean }) {
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onPointerLeave={() => doc.setCursor(null, 0)}
-        onContextMenu={(e) => e.preventDefault()}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          const moved = rightMoved.current;
+          rightStart.current = null;
+          rightMoved.current = false;
+          if (hasDoc && !moved) setCtxMenu({ x: e.clientX, y: e.clientY });
+        }}
       />
       <canvas ref={murmCanvasRef} aria-hidden className="pointer-events-none absolute inset-0 h-full w-full" style={{ zIndex: 12 }} />
       <LiveStatus ws="edit" verb="Editing" />
 
       {!hasDoc && (
         <div className="absolute inset-x-0 top-0 flex items-center justify-center" style={{ bottom: capsuleH + 40 }}>
-          <EmptyState lead="Drop an image" italic="to begin." sub="or paste, or press Ctrl+O" />
+          <EmptyState
+            icon={<EmptyEditIcon size={56} className="text-ink-3" />}
+            lead="Drop an image"
+            italic="to begin."
+            sub="or paste, or press Ctrl+O"
+          />
         </div>
       )}
       {dragOver && <div className="pointer-events-none absolute inset-4 rounded-[var(--r-xl)]" style={{ boxShadow: "inset 0 0 0 2px var(--accent-ring)", zIndex: 25 }} />}
@@ -577,10 +688,28 @@ export default function EditWorkspace({ active }: { active: boolean }) {
       {compare && hasDoc && <CompareOverlay rect={rect} split={split} onSplit={(v) => useEditStore.getState().setSplit(v)} />}
 
       <BrushBar visible={brushVisible} eyedropping={eyedrop} onEyedropper={() => setEyedropMode(true)} />
-      <ToolRail doc={doc} disabled={!hasDoc} busy={busyAny} onRemoveBg={() => void removeBg()} />
-      <ViewCluster doc={doc} disabled={!hasDoc} />
+      <div className="pointer-events-none absolute bottom-5 left-4 top-4 flex flex-col justify-between gap-2" style={{ zIndex: 20 }}>
+        <ToolRail doc={doc} disabled={!hasDoc} busy={false} onRemoveBg={() => void removeBg()} />
+        <ViewCluster doc={doc} disabled={!hasDoc} />
+      </div>
       <ReferenceStrip doc={doc} contentVersion={contentVersion} visible={refsVisible} />
       <EditCapsule ref={capsule} disabled={!hasDoc} onRun={() => void run()} />
+      <Menu
+        open={!!ctxMenu}
+        onClose={() => setCtxMenu(null)}
+        anchor={ctxMenu ?? { x: 0, y: 0 }}
+        ariaLabel="Canvas options"
+        items={[
+          { id: "rembg", icon: Scissors, label: "Remove background", shortcut: "Ctrl+Shift+B", onSelect: () => void removeBg() },
+          "separator",
+          { id: "inv", icon: Contrast, label: "Invert mask", shortcut: "Ctrl+I", disabled: maskEmpty, onSelect: () => doc.invertMask() },
+          { id: "clr", icon: CircleSlash, label: "Clear mask", shortcut: "Ctrl+Shift+X", disabled: maskEmpty, onSelect: () => doc.clearMask() },
+          { id: "vis", icon: maskVisible ? EyeOff : Eye, label: maskVisible ? "Hide mask" : "Show mask", shortcut: "H", disabled: maskEmpty, onSelect: () => useEditStore.getState().setMaskVisible(!maskVisible) },
+          "separator",
+          { id: "fit", icon: Scan, label: "Fit to screen", shortcut: "Ctrl+0", onSelect: () => doc.fit() },
+          ...(sourceItem ? [{ id: "reveal", icon: FolderOpen, label: "Reveal source in Explorer", onSelect: () => void reveal(sourceItem) }] : []),
+        ]}
+      />
     </div>
   );
 }

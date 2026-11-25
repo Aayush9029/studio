@@ -14,6 +14,7 @@ interface SliderProps {
   /** Logarithmic mapping (brush size). */
   log?: boolean;
   width?: number | string;
+  compact?: boolean;
   hideValue?: boolean;
   disabled?: boolean;
   ariaLabel?: string;
@@ -22,7 +23,7 @@ interface SliderProps {
 const RES = 1000;
 
 /** 4 px track, accent fill, 14 px thumb; value in mono at right. Arrows ±1 step, Shift ±10, dblclick resets (§4). */
-export function Slider({ label, micro, value, min, max, step, defaultValue, onChange, format, log, width, hideValue, disabled, ariaLabel }: SliderProps) {
+export function Slider({ label, micro, value, min, max, step, defaultValue, onChange, format, log, width, compact, hideValue, disabled, ariaLabel }: SliderProps) {
   const id = useId();
   const toPos = (v: number) => {
     if (log) return (Math.log(Math.max(v, min) / min) / Math.log(max / min)) * RES;
@@ -54,16 +55,16 @@ export function Slider({ label, micro, value, min, max, step, defaultValue, onCh
   };
 
   return (
-    <div className="flex items-center gap-3" style={{ width }}>
+    <div className={`flex items-center ${compact ? "gap-2" : "gap-3"}`} style={{ width }}>
       {label && (
-        <label htmlFor={id} className={`${micro ? "t-micro" : "t-caption"} w-[76px] shrink-0 text-ink-3`}>
+        <label htmlFor={id} className={`${micro ? "t-micro" : "t-caption"} ${compact ? "w-auto" : "w-[76px]"} shrink-0 text-ink-3`}>
           {label}
         </label>
       )}
       <input
         id={id}
         type="range"
-        className="studio-range min-w-0 flex-1"
+        className={`studio-range flex-1 ${compact ? "min-w-[52px]" : "min-w-0"}`}
         min={0}
         max={RES}
         step={1}
@@ -76,7 +77,7 @@ export function Slider({ label, micro, value, min, max, step, defaultValue, onCh
         onKeyDown={onKey}
         onDoubleClick={() => defaultValue !== undefined && onChange(defaultValue)}
       />
-      {!hideValue && <span className="mono w-[52px] shrink-0 text-right text-ink">{format ? format(value) : value}</span>}
+      {!hideValue && <span className={`mono shrink-0 text-right text-ink ${compact ? "w-9" : "w-[52px]"}`}>{format ? format(value) : value}</span>}
     </div>
   );
 }

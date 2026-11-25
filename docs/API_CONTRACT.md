@@ -267,12 +267,13 @@ Returns one `Telemetry` object — the same shape as the `telemetry` WebSocket e
   "vramProcessMb": 19876,
   "ramTotalMb": 65536, "ramUsedMb": 31744,
   "ramProcessMb": 6120,
+  "cpuUtilPct": 14.2,
   "gpuUtilPct": null,
   "activeJobId": null
 }
 ```
 
-`vramProcessMb` = `torch.cuda.memory_reserved()`; `ramProcessMb` = daemon RSS; `gpuUtilPct` is `number | null` (null when the platform cannot report it).
+`vramProcessMb` = `torch.cuda.memory_reserved()`; `ramProcessMb` = daemon RSS; `cpuUtilPct` and `gpuUtilPct` are `number | null` (null when the platform cannot report them).
 
 ### 3.8 `POST /api/enhance-prompt`
 
@@ -691,6 +692,7 @@ Sent on connect and whenever any family's `state` changes.
   "source": "engine",
   "vramTotalMb": 104448, "vramUsedMb": 20112, "vramFreeMb": 84336, "vramProcessMb": 19876,
   "ramTotalMb": 65536, "ramUsedMb": 31744, "ramProcessMb": 6120,
+  "cpuUtilPct": 14.2,
   "gpuUtilPct": null,
   "activeJobId": null
 }
@@ -1318,6 +1320,7 @@ export interface Telemetry {
   source: "engine" | "core";
   vramTotalMb: number; vramUsedMb: number; vramFreeMb: number;
   ramTotalMb: number; ramUsedMb: number;
+  cpuUtilPct?: number | null;
 }
 export interface EngineTelemetry extends Telemetry {
   source: "engine";

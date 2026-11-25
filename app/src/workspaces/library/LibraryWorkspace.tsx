@@ -1,13 +1,17 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as RMouseEvent } from "react";
-import { Box, Check, Heart, Search, Trash2 } from "lucide-react";
+import { Box, Brush, Check, Copy, FolderOpen, Heart, RotateCcw, Search, Trash2 } from "lucide-react";
 import type { OutputItem } from "../../shared/contract";
+import { useDragStore } from "../../stores/drag";
+import { useEngineStore } from "../../stores/engine";
 import { filterItems, useLibraryStore, type LibraryFilter } from "../../stores/library";
 import { registerCommands } from "../../lib/commands";
-import { deleteItems, openHome, toggleFavorite } from "../../lib/actions";
-import { thumbnailUrl } from "../../lib/images";
+import { copyImage, deleteItems, makeIn3D, openHome, openInEdit, reusePromptAndSeed, reveal, saveCopy, sendToBlender, toggleFavorite } from "../../lib/actions";
+import { imagePathOf, thumbnailUrl, thumbUrl } from "../../lib/images";
 import { truncate } from "../../lib/format";
 import { useConfirm } from "../../lib/useConfirm";
+import { EmptyLibraryIcon, NoSearchMatchIcon } from "../../components/ui/EmptyStateIcons";
 import { IconButton } from "../../components/ui/IconButton";
+import { Menu } from "../../components/ui/Menu";
 import { Pill } from "../../components/ui/Pill";
 import { EmptyState } from "../../components/ui/misc";
 import { Inspector, useInspectedItem } from "./Inspector";
@@ -15,6 +19,8 @@ import { Inspector, useInspectedItem } from "./Inspector";
 const GAP = 12;
 const MIN_COL = 220;
 const PAD_X = 32;
+const PAD_TOP = 16;
+const PAD_BOTTOM = 24;
 
 interface Placed {
   item: OutputItem;
@@ -36,7 +42,7 @@ function layoutMasonry(items: OutputItem[], width: number): Masonry {
   const inner = Math.max(MIN_COL, width - PAD_X * 2);
   const cols = Math.max(1, Math.floor((inner + GAP) / (MIN_COL + GAP)));
   const colW = (inner - GAP * (cols - 1)) / cols;
-  const heights = new Array<number>(cols).fill(0);
+  const heights = new Array<number>(cols).fill(PAD_TOP);
   const placed: Placed[] = [];
   const columns: number[][] = Array.from({ length: cols }, () => []);
   for (const item of items) {
@@ -48,7 +54,12 @@ function layoutMasonry(items: OutputItem[], width: number): Masonry {
     placed.push({ item, x: PAD_X + c * (colW + GAP), y: heights[c], w: colW, h });
     heights[c] += h + GAP;
   }
-  return { placed, columns, height: Math.max(0, ...heights) };
+  return { placed, columns, height: visibleHeight(heights) };
+}
+
+function visibleHeight(heights: number[]): number {
+  const max = Math.max(0, ...heights);
+  return max > PAD_TOP ? max + PAD_BOTTOM : 0;
 }
 
 /** Cards intersecting [lo, hi]: binary-search each column's first visible card, then walk until past `hi`. */
@@ -132,7 +143,9 @@ export default function LibraryWorkspace({ active }: { active: boolean }) {
 
   // ───────── Selection / actions ─────────
   const { armed, press, disarm } = useConfirm(3000);
-  const selectedItems = useMemo(() => visible.filter((i) => selection.has(i.id)), [visible, selection]);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; item: OutputItem } | null>(null);
+  const blenderConnected = useEngineStore((s) => !!s.blender?.connected);
+  const selectedItems = useMemo(() => items.filter((i) => selection.has(i.id)), [items, selection]);
 
   const onTileClick = useCallback(
     (item: OutputItem, e: RMouseEvent) => {
@@ -152,6 +165,11 @@ export default function LibraryWorkspace({ active }: { active: boolean }) {
     },
     [visible, lib],
   );
+
+  const onTileContextMenu = useCallback((item: OutputItem, e: RMouseEvent) => {
+    e.preventDefault();
+    setCtxMenu({ x: e.clientX, y: e.clientY, item });
+  }, []);
 
   const deleteSelected = () => {
     const run = () => {
@@ -200,7 +218,11 @@ export default function LibraryWorkspace({ active }: { active: boolean }) {
             return true;
           }
           const focusedId = (document.activeElement as HTMLElement | null)?.dataset?.itemId ?? null;
-          const target = focusedId ? visible.find((i) => i.id === focusedId) : s.inspectedId ? visible.find((i) => i.id === s.inspectedId) : undefined;
+          const target = focusedId
+            ? items.find((i) => i.id === focusedId)
+            : s.inspectedId
+              ? items.find((i) => i.id === s.inspectedId)
+              : undefined;
           if (e.key === "Delete") {
             if (s.selection.size) deleteSelected();
             else if (target) void deleteItems([target]);
@@ -234,7 +256,7 @@ export default function LibraryWorkspace({ active }: { active: boolean }) {
   return (
     <div className="flex h-full min-h-0">
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-16 shrink-0 items-center gap-3 px-8">
+        <header className="flex h-16 shrink-0 items-center gap-3 border-b border-hairline px-8">
           <h1 className="t-title m-0 text-ink">Library</h1>
           <div className="flex-1" />
           {selectMode ? (
@@ -296,12 +318,32 @@ export default function LibraryWorkspace({ active }: { active: boolean }) {
         <div ref={scroller} className="relative min-h-0 flex-1 overflow-y-auto pb-8">
           {nothing && (
             <div className="absolute inset-0 flex items-center justify-center">
-              <EmptyState lead="Nothing here yet." sub="What you make appears in this room." />
+              <EmptyState
+                icon={<EmptyLibraryIcon size={56} className="text-ink-3" />}
+                lead="Nothing here yet."
+                sub="What you make appears in this room."
+              />
             </div>
           )}
           {noMatch && (
             <div className="absolute inset-0 flex items-center justify-center">
-              <EmptyState lead="No match." sub="Try fewer words" />
+              <EmptyState
+                icon={<NoSearchMatchIcon size={56} className="text-ink-3" />}
+                lead="No match."
+                sub="Try fewer words or clear filters"
+                action={
+                  <Pill
+                    onClick={() => {
+                      setSearch("");
+                      lib().setQuery("");
+                      lib().setFilter("all");
+                      if (favoritesOnly) lib().toggleFavoritesOnly();
+                    }}
+                  >
+                    Clear filters
+                  </Pill>
+                }
+              />
             </div>
           )}
           <div className="relative" style={{ height }} role="grid" aria-label="Library items" aria-rowcount={visible.length}>
@@ -313,12 +355,52 @@ export default function LibraryWorkspace({ active }: { active: boolean }) {
                 selected={selection.has(p.item.id)}
                 inspected={inspected?.id === p.item.id}
                 onClick={onTileClick}
+                onContextMenu={onTileContextMenu}
               />
             ))}
           </div>
         </div>
       </div>
       {inspected && <Inspector key="inspector" item={inspected} onClose={() => lib().inspect(null)} onStep={step} />}
+      <Menu
+        open={!!ctxMenu}
+        onClose={() => setCtxMenu(null)}
+        anchor={ctxMenu ? { x: ctxMenu.x, y: ctxMenu.y } : { x: 0, y: 0 }}
+        ariaLabel="Item options"
+        items={
+          ctxMenu
+            ? [
+                { id: "open", label: "Open in workspace", onSelect: () => openHome(ctxMenu.item) },
+                { id: "reuse", icon: RotateCcw, label: "Reuse prompt and seed", onSelect: () => reusePromptAndSeed(ctxMenu.item) },
+                ...(imagePathOf(ctxMenu.item)
+                  ? [
+                      { id: "edit", icon: Brush, label: "Edit in canvas", onSelect: () => openInEdit(ctxMenu.item) },
+                      { id: "3d", icon: Box, label: "Make 3D", onSelect: () => makeIn3D(ctxMenu.item) },
+                    ]
+                  : []),
+                ...(ctxMenu.item.kind === "3d"
+                  ? [{ id: "blender", label: "Send to Blender", disabled: !blenderConnected, disabledReason: "Blender not running", onSelect: () => void sendToBlender(ctxMenu.item) }]
+                  : []),
+                "separator",
+                ...(imagePathOf(ctxMenu.item) ? [{ id: "copy", icon: Copy, label: "Copy image", onSelect: () => void copyImage(ctxMenu.item) }] : []),
+                { id: "save", label: "Save a copy…", onSelect: () => void saveCopy(ctxMenu.item) },
+                { id: "reveal", icon: FolderOpen, label: "Reveal in Explorer", onSelect: () => void reveal(ctxMenu.item) },
+                { id: "fav", icon: Heart, label: ctxMenu.item.favorite ? "Remove from favorites" : "Favorite", onSelect: () => void toggleFavorite(ctxMenu.item) },
+                "separator",
+                {
+                  id: "delete",
+                  icon: Trash2,
+                  label: selection.size > 1 && selection.has(ctxMenu.item.id) ? `Delete ${selection.size} selected` : "Delete",
+                  danger: true,
+                  onSelect: () => {
+                    const targets = selection.size > 1 && selection.has(ctxMenu.item.id) ? selectedItems : [ctxMenu.item];
+                    void deleteItems(targets).then((ok) => ok && targets.length > 1 && lib().setSelectMode(false));
+                  },
+                },
+              ]
+            : []
+        }
+      />
     </div>
   );
 }
@@ -329,15 +411,18 @@ const Tile = memo(function Tile({
   selected,
   inspected,
   onClick,
+  onContextMenu,
 }: {
   p: Placed;
   selectMode: boolean;
   selected: boolean;
   inspected: boolean;
   onClick(item: OutputItem, e: RMouseEvent): void;
+  onContextMenu(item: OutputItem, e: RMouseEvent): void;
 }) {
   const { item } = p;
   const src = thumbnailUrl(item);
+  const dragPreview = src ?? thumbUrl(item);
   return (
     <div
       role="gridcell"
@@ -354,11 +439,28 @@ const Tile = memo(function Tile({
     >
       <button
         type="button"
+        draggable={!selectMode}
         data-item-id={item.id}
         aria-label={truncate(item.params.prompt || item.model.label, 120)}
         aria-selected={selectMode ? selected : undefined}
         onClick={(e) => onClick(item, e)}
         onDoubleClick={() => !selectMode && openHome(item)}
+        onContextMenu={(e) => onContextMenu(item, e)}
+        onDragStart={(e) => {
+          if (selectMode) return;
+          useDragStore.getState().start(
+            {
+              kind: item.kind,
+              path: imagePathOf(item) ?? item.path,
+              previewUrl: dragPreview,
+              name: item.file,
+              item,
+            },
+            e.clientX,
+            e.clientY,
+            e.dataTransfer,
+          );
+        }}
         className="absolute inset-0 block h-full w-full focus-visible:outline-offset-[-2px]"
       >
         {src ? (

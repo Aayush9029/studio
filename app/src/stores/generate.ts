@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { ImageModel, OutputItem } from "../shared/contract";
+import type { EditOpenRequest } from "./edit";
 import { staticFamily, type AspectId } from "../shared/families";
 
 export interface GeneratePersisted {
@@ -28,6 +29,8 @@ interface GenerateState extends GeneratePersisted {
   batchItems: OutputItem[];
   /** Enhanced prompt of the last run, shown under the metadata pill. */
   enhancedNote: string | null;
+  /** Temporary image drop awaiting user choice ("Edit" vs "Dismiss" / "Don't ask again"). */
+  pendingDrop: EditOpenRequest | null;
 
   patch(p: Partial<GeneratePersisted>): void;
   setModel(m: ImageModel, defaults?: { steps: number; cfg: number; sampler: string; scheduler: string }): void;
@@ -36,6 +39,7 @@ interface GenerateState extends GeneratePersisted {
   setBatch(items: OutputItem[]): void;
   addBatchItem(item: OutputItem): void;
   setEnhancedNote(s: string | null): void;
+  requestDrop(d: EditOpenRequest | null): void;
   hydrate(p: Partial<GeneratePersisted>): void;
 }
 
@@ -76,6 +80,7 @@ export const useGenerateStore = create<GenerateState>()((set) => ({
   current: null,
   batchItems: [],
   enhancedNote: null,
+  pendingDrop: null,
 
   patch: (p) => set(p),
   setModel: (m, d) =>
@@ -99,6 +104,13 @@ export const useGenerateStore = create<GenerateState>()((set) => ({
   addBatchItem: (item) =>
     set((s) => (s.batchItems.some((i) => i.id === item.id) ? s : { batchItems: [...s.batchItems, item] })),
   setEnhancedNote: (note) => set({ enhancedNote: note }),
+  requestDrop: (d) =>
+    set((s) => {
+      if (s.pendingDrop?.url && s.pendingDrop.url.startsWith("blob:") && s.pendingDrop.url !== d?.url) {
+        URL.revokeObjectURL(s.pendingDrop.url);
+      }
+      return { pendingDrop: d };
+    }),
   hydrate: (p) =>
     set(() => {
       const out: Partial<GeneratePersisted> = {};
