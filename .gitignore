@@ -1,0 +1,28 @@
+# Model weights, Python runtime, user outputs, logs, and local config
+models/
+runtime/
+outputs/
+logs/
+studio.config.json
+
+# Vendored third-party inference backend
+engine/vendor/
+
+# Node / Electron / Vite build artifacts
+app/node_modules/
+app/dist/
+app/dist-electron/
+
+# Rust build target
+core/target/
+
+# Python caches
+**/__pycache__/
+*.py[cod]
+
+# Logs, temporary files, and OS metadata
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
